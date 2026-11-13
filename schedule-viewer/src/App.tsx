@@ -382,7 +382,7 @@ function App() {
           <article className="panel-card flex min-h-[560px] flex-col">
             <div className="panel-header">
               <div>
-                <h2 className="panel-title">Structured output</h2>
+                <h2 className="panel-title"></h2>
                 <p className="panel-subtitle">Live preview · headings, tables, lists, and emphasis</p>
               </div>
               <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-50 text-indigo-600">

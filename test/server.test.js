@@ -23,9 +23,42 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     if (request.url === "/api/chat") {
       let body = "";
       for await (const chunk of request) body += chunk;
-      receivedChats.push(JSON.parse(body));
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ message: { content: "I can see the photo." } }));
+      const chat = JSON.parse(body);
+      receivedChats.push(chat);
+      response.writeHead(200, { "Content-Type": chat.stream ? "application/x-ndjson" : "application/json" });
+      if (chat.stream) {
+        const isSkillGeneration = chat.messages[0].content.includes("Create a concise, reusable assistant skill");
+        const shouldTruncateSkill = isSkillGeneration &&
+          chat.messages[1].content.includes("simulate truncation");
+        const content = isSkillGeneration
+          ? shouldTruncateSkill
+            ? "{\"name\":\"cut off\""
+            : `Generated skill:\n\`\`\`json\n${JSON.stringify({
+            name: "Generated project skill",
+            summary: "Follows the conventions and structure of this project.",
+            instructions: "Review the project documentation and existing source patterns before suggesting changes."
+          })}\n\`\`\``
+          : "I can see the photo.";
+        const chunks = isSkillGeneration
+          ? [content.slice(0, Math.ceil(content.length / 2)), content.slice(Math.ceil(content.length / 2))]
+          : ["I can ", "see the photo."];
+        response.write(`${JSON.stringify({ message: { content: chunks[0] }, done: false })}\n`);
+        response.end(`${JSON.stringify({
+          message: { content: chunks[1] },
+          done: true,
+          ...(shouldTruncateSkill ? { done_reason: "length" } : {})
+        })}\n`);
+      } else {
+        response.end(JSON.stringify({
+          message: {
+            content: JSON.stringify({
+              name: "Generated project skill",
+              summary: "Follows the conventions and structure of this project.",
+              instructions: "Review the project documentation and existing source patterns before suggesting changes."
+            })
+          }
+        }));
+      }
       return;
     }
 
@@ -35,12 +68,25 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
 
   const previousHost = process.env.OLLAMA_HOST;
   const previousDataFile = process.env.CHAT_DATA_FILE;
-  const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ollama-chat-test-"));
-  const dataFile = path.join(dataDirectory, "chats.json");
+  const previousMemoryFile = process.env.MEMORY_DATA_FILE;
+  const previousSkillDirectory = process.env.SKILL_DATA_DIR;
+  const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ollama-chat-test-"));
+  const dataFile = path.join(testDirectory, "data", "chats.json");
+  const memoryFile = path.join(testDirectory, "data", "memory.json");
+  const skillDirectory = path.join(testDirectory, "skills");
+  const projectDirectory = path.join(testDirectory, "source-project");
+  fs.mkdirSync(path.join(projectDirectory, "src"), { recursive: true });
+  fs.mkdirSync(path.join(projectDirectory, "node_modules", "ignored"), { recursive: true });
+  fs.writeFileSync(path.join(projectDirectory, "README.md"), "# Project docs\nUse the local helper pattern.");
+  fs.writeFileSync(path.join(projectDirectory, "src", "app.js"), "function localHelper() { return 'safe'; }");
+  fs.writeFileSync(path.join(projectDirectory, ".env"), "SECRET=do-not-read");
+  fs.writeFileSync(path.join(projectDirectory, "node_modules", "ignored", "index.js"), "do not scan");
   await new Promise((resolve) => ollama.listen(0, "127.0.0.1", resolve));
   const ollamaPort = ollama.address().port;
   process.env.OLLAMA_HOST = `http://127.0.0.1:${ollamaPort}`;
   process.env.CHAT_DATA_FILE = dataFile;
+  process.env.MEMORY_DATA_FILE = memoryFile;
+  process.env.SKILL_DATA_DIR = skillDirectory;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const appUrl = `http://127.0.0.1:${server.address().port}`;
 
@@ -57,7 +103,17 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     } else {
       process.env.CHAT_DATA_FILE = previousDataFile;
     }
-    fs.rmSync(dataDirectory, { recursive: true, force: true });
+    if (previousMemoryFile === undefined) {
+      delete process.env.MEMORY_DATA_FILE;
+    } else {
+      process.env.MEMORY_DATA_FILE = previousMemoryFile;
+    }
+    if (previousSkillDirectory === undefined) {
+      delete process.env.SKILL_DATA_DIR;
+    } else {
+      process.env.SKILL_DATA_DIR = previousSkillDirectory;
+    }
+    fs.rmSync(testDirectory, { recursive: true, force: true });
   });
 
   const page = await fetch(appUrl);
@@ -89,9 +145,15 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     })
   });
   assert.equal(chatResponse.status, 200);
-  assert.deepEqual(await chatResponse.json(), { reply: "I can see the photo." });
+  assert.match(chatResponse.headers.get("content-type"), /text\/event-stream/);
+  const streamText = await chatResponse.text();
+  const streamEvents = streamText.split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.replace(/^data:\s*/, ""))
+  );
+  assert.deepEqual(streamEvents.filter((event) => event.token).map((event) => event.token), ["I can ", "see the photo."]);
+  assert.equal(streamEvents.at(-1).reply, "I can see the photo.");
   assert.equal(receivedChats[0].model, "gemma4:e2b");
-  assert.equal(receivedChats[0].stream, false);
+  assert.equal(receivedChats[0].stream, true);
   assert.deepEqual(receivedChats[0].messages[0].images, ["aGVsbG8="]);
 
   const historyResponse = await fetch(`${appUrl}/api/history`);
@@ -122,11 +184,114 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.match(receivedChats[1].messages[0].content, /favorite color is violet/);
   assert.equal(receivedChats[1].messages[1].content, "What color do I like?");
 
+  const saveMemoryResponse = await fetch(`${appUrl}/api/memory`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "The user prefers concise steps." })
+  });
+  assert.equal(saveMemoryResponse.status, 200);
+  assert.equal((await saveMemoryResponse.json()).text, "The user prefers concise steps.");
+  assert.equal(JSON.parse(fs.readFileSync(memoryFile, "utf8")).text, "The user prefers concise steps.");
+
+  const previewResponse = await fetch(`${appUrl}/api/skills/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folderPath: projectDirectory })
+  });
+  assert.equal(previewResponse.status, 200);
+  const preview = await previewResponse.json();
+  assert.deepEqual(preview.files.map((file) => file.path), ["README.md", "src/app.js"]);
+  assert.equal(preview.files.some((file) => file.content.includes("SECRET=")), false);
+  assert.equal(preview.files.some((file) => file.content.includes("do not scan")), false);
+  const filesystemRootResponse = await fetch(`${appUrl}/api/skills/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folderPath: path.parse(projectDirectory).root })
+  });
+  assert.equal(filesystemRootResponse.status, 400);
+
+  for (let index = 0; index < 18; index += 1) {
+    const fileName = `generated-${String(index).padStart(2, "0")}.js`;
+    fs.writeFileSync(path.join(projectDirectory, "src", fileName), `// representative source\n${"const value = 'example';\n".repeat(160)}`);
+  }
+
+  const createSkillResponse = await fetch(`${appUrl}/api/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gemma4:e2b",
+      name: "Project conventions",
+      request: "Create a skill for making changes in this project's style.",
+      folderPath: projectDirectory
+    })
+  });
+  assert.equal(createSkillResponse.status, 200);
+  assert.match(createSkillResponse.headers.get("content-type"), /text\/event-stream/);
+  const skillEvents = (await createSkillResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.slice(5).trim())
+  );
+  const skill = skillEvents.at(-1).skill;
+  assert.ok(skillEvents.some((event) => event.progress));
+  assert.ok(skillEvents.some((event) => event.token));
+  assert.equal(skill.name, "Project conventions");
+  assert.equal(skill.fileCount, 20);
+  assert.equal(skill.sourcePath, fs.realpathSync(projectDirectory));
+  assert.equal(receivedChats[2].stream, true);
+  assert.equal(receivedChats[2].options.num_predict, 2048);
+  assert.deepEqual(receivedChats[2].format.required, ["name", "summary", "instructions"]);
+  const skillPrompt = JSON.parse(receivedChats[2].messages[1].content);
+  assert.ok(skillPrompt.source_files.length <= 16);
+  assert.ok(skillPrompt.source_files.reduce((total, file) => total + file.content.length, 0) <= 128000);
+  assert.ok(skillPrompt.omitted_file_count > 0);
+  assert.match(receivedChats[2].messages[1].content, /Use the local helper pattern/);
+  assert.equal(fs.existsSync(path.join(skillDirectory, `${skill.id}.json`)), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(skillDirectory, "master.json"), "utf8")).skills.map((item) => item.id), [skill.id]);
+
+  fs.appendFileSync(path.join(projectDirectory, "README.md"), "\nUpdated source text.");
+  const skilledChatResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-3",
+      model: "gemma4:e2b",
+      skillIds: [skill.id],
+      messages: [{ role: "user", content: "Use the project conventions." }]
+    })
+  });
+  assert.equal(skilledChatResponse.status, 200);
+  await skilledChatResponse.text();
+  assert.match(receivedChats[3].messages[0].content, /The user prefers concise steps/);
+  assert.match(receivedChats[3].messages[0].content, /Project conventions/);
+  assert.match(receivedChats[3].messages[0].content, /function localHelper/);
+  assert.match(receivedChats[3].messages[0].content, /Updated source text/);
+
+  const truncatedSkillResponse = await fetch(`${appUrl}/api/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gemma4:e2b",
+      name: "Truncated skill",
+      request: "simulate truncation"
+    })
+  });
+  const truncatedSkillEvents = (await truncatedSkillResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.slice(5).trim())
+  );
+  assert.match(truncatedSkillEvents.at(-1).error, /output limit/);
+  const savedSkillsResponse = await fetch(`${appUrl}/api/skills`);
+  assert.equal((await savedSkillsResponse.json()).skills.length, 1);
+
+  const deleteSkillResponse = await fetch(`${appUrl}/api/skills/${skill.id}`, { method: "DELETE" });
+  assert.equal(deleteSkillResponse.status, 200);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(skillDirectory, "master.json"), "utf8")).skills, []);
+  const skillChat = (await (await fetch(`${appUrl}/api/history/test-chat-3`)).json()).chat;
+  assert.deepEqual(skillChat.skillIds, []);
+
   const deleteResponse = await fetch(`${appUrl}/api/history/test-chat-2`, { method: "DELETE" });
   assert.equal(deleteResponse.status, 200);
   assert.deepEqual(await deleteResponse.json(), { deleted: true });
   const remainingHistoryResponse = await fetch(`${appUrl}/api/history`);
-  assert.deepEqual((await remainingHistoryResponse.json()).chats.map((chat) => chat.id), ["test-chat-1"]);
+  assert.deepEqual((await remainingHistoryResponse.json()).chats.map((chat) => chat.id), ["test-chat-3", "test-chat-1"]);
 
   const invalidImageResponse = await fetch(`${appUrl}/api/chat`, {
     method: "POST",

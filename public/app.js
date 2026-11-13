@@ -23,12 +23,36 @@ const copyOutputButton = document.querySelector("#copy-output-button");
 const editMessageControls = document.querySelector("#edit-message-controls");
 const cancelEditButton = document.querySelector("#cancel-edit-button");
 const historyList = document.querySelector("#history-list");
+const outlineToggle = document.querySelector("#outline-toggle");
+const outlineList = document.querySelector("#outline-list");
+const outlineCount = document.querySelector("#outline-count");
+const settingsButton = document.querySelector("#settings-button");
+const settingsDialog = document.querySelector("#settings-dialog");
+const closeSettingsButton = document.querySelector("#close-settings-button");
+const memoryInput = document.querySelector("#memory-input");
+const saveMemoryButton = document.querySelector("#save-memory-button");
+const savedSkillsElement = document.querySelector("#saved-skills");
+const skillForm = document.querySelector("#skill-form");
+const skillNameInput = document.querySelector("#skill-name");
+const skillRequestInput = document.querySelector("#skill-request");
+const skillFolderPathInput = document.querySelector("#skill-folder-path");
+const previewSkillFolderButton = document.querySelector("#preview-skill-folder");
+const skillFolderPreview = document.querySelector("#skill-folder-preview");
+const settingsStatus = document.querySelector("#settings-status");
+const useSkillButton = document.querySelector("#use-skill-button");
+const skillSelectionCount = document.querySelector("#skill-selection-count");
+const skillPopover = document.querySelector("#skill-popover");
+const skillPickerList = document.querySelector("#skill-picker-list");
+const manageSkillsButton = document.querySelector("#manage-skills-button");
 
 const conversation = [];
 const maxImageBytes = 2 * 1024 * 1024;
 const maxServerMessages = 500;
+const maxActiveSkills = 3;
 let availableModels = [];
 let chatHistory = [];
+let savedSkills = [];
+let activeSkillIds = [];
 let currentChatId = createChatId();
 let pendingImage = null;
 let editingMessageIndex = null;
@@ -42,9 +66,33 @@ function createChatId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function appendMessageActions(message, index, messageColumn) {
+  const actions = document.createElement("div");
+  actions.className = "message-actions";
+  if (message.role === "user") {
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.textContent = "Edit";
+    editButton.setAttribute("aria-label", "Edit this message");
+    editButton.addEventListener("click", () => editUserMessage(index));
+    actions.append(editButton);
+  }
+
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy";
+  copyButton.setAttribute("aria-label", message.role === "user" ? "Copy this input" : "Copy this output");
+  copyButton.addEventListener("click", () => copyText(message.content, message.role));
+  actions.append(copyButton);
+  messageColumn.append(actions);
+}
+
 function addMessage(message, index) {
   const article = document.createElement("article");
   article.className = `message ${message.role === "user" ? "user-message" : "assistant-message"}`;
+  if (index >= 0) article.id = `chat-message-${index}`;
+  if (message.isStreaming) article.classList.add("is-streaming");
+  if (message.isArriving) article.classList.add("is-arriving");
 
   const messageContent = document.createElement("div");
   messageContent.className = "message-content";
@@ -52,7 +100,7 @@ function addMessage(message, index) {
   if (message.role === "assistant") {
     const author = document.createElement("span");
     author.className = "message-author";
-    author.textContent = message.isGreeting ? "Assistant" : "---";
+    author.textContent = message.isGreeting ? "Assistant" : "sir,";
     messageContent.append(author);
 
     if (message.model) {
@@ -92,30 +140,14 @@ function addMessage(message, index) {
   messageColumn.className = "message-column";
   messageColumn.append(messageContent);
 
-  if (!message.isGreeting) {
-    const actions = document.createElement("div");
-    actions.className = "message-actions";
-    if (message.role === "user") {
-      const editButton = document.createElement("button");
-      editButton.type = "button";
-      editButton.textContent = "Edit";
-      editButton.setAttribute("aria-label", "Edit this message");
-      editButton.addEventListener("click", () => editUserMessage(index));
-      actions.append(editButton);
-    }
-
-    const copyButton = document.createElement("button");
-    copyButton.type = "button";
-    copyButton.textContent = "Copy";
-    copyButton.setAttribute("aria-label", message.role === "user" ? "Copy this input" : "Copy this output");
-    copyButton.addEventListener("click", () => copyText(message.content, message.role));
-    actions.append(copyButton);
-    messageColumn.append(actions);
+  if (!message.isGreeting && !message.isStreaming) {
+    appendMessageActions(message, index, messageColumn);
   }
 
   article.append(messageColumn);
   messagesElement.append(article);
   messagesElement.scrollTop = messagesElement.scrollHeight;
+  if (message.role === "user") renderOutline();
   return article;
 }
 
@@ -218,6 +250,47 @@ function appendTable(parent, lines, headerLine, dividerLine) {
   parent.append(wrapper);
 }
 
+function createCodeBlock(codeText, language) {
+  const block = document.createElement("section");
+  block.className = "code-block";
+  const header = document.createElement("header");
+  header.className = "code-block-header";
+  const languageLabel = document.createElement("span");
+  languageLabel.className = "code-language";
+  languageLabel.textContent = language || "code";
+
+  const actions = document.createElement("div");
+  actions.className = "code-actions";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy";
+  copyButton.addEventListener("click", () => copyText(codeText, "code"));
+  const downloadButton = document.createElement("button");
+  downloadButton.type = "button";
+  downloadButton.textContent = "Download";
+  downloadButton.addEventListener("click", () => downloadCode(codeText, language));
+  actions.append(copyButton, downloadButton);
+  header.append(languageLabel, actions);
+
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.textContent = codeText;
+  pre.append(code);
+  block.append(header, pre);
+  return block;
+}
+
+function downloadCode(codeText, language) {
+  const extension = (language || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const safeExtension = /^[a-z0-9]{1,10}$/.test(extension) ? extension : "txt";
+  const objectUrl = URL.createObjectURL(new Blob([codeText], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `snippet.${safeExtension}`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 function renderStructuredOutput(markdown) {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const fragment = document.createDocumentFragment();
@@ -232,7 +305,8 @@ function renderStructuredOutput(markdown) {
       continue;
     }
 
-    if (/^ {0,3}```/.test(line)) {
+    const codeFence = /^ {0,3}```([\w.+#-]*)\s*$/.exec(line);
+    if (codeFence) {
       const codeLines = [];
       index += 1;
       while (index < lines.length && !/^ {0,3}```/.test(lines[index])) {
@@ -240,11 +314,7 @@ function renderStructuredOutput(markdown) {
         index += 1;
       }
       if (index < lines.length) index += 1;
-      const pre = document.createElement("pre");
-      const code = document.createElement("code");
-      code.textContent = codeLines.join("\n");
-      pre.append(code);
-      fragment.append(pre);
+      fragment.append(createCodeBlock(codeLines.join("\n"), codeFence[1]));
       continue;
     }
 
@@ -349,6 +419,67 @@ function renderMessages() {
     conversation.forEach((message, index) => addMessage(message, index));
   }
   updateToolbarState();
+  renderOutline();
+}
+
+function renderOutline() {
+  const prompts = conversation
+    .map((message, index) => ({ message, index }))
+    .filter((entry) => entry.message.role === "user");
+  outlineCount.textContent = String(prompts.length);
+  outlineList.replaceChildren();
+  outlineToggle.replaceChildren();
+
+  if (prompts.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "outline-empty";
+    empty.textContent = "Your prompts will appear here.";
+    outlineList.append(empty);
+    return;
+  }
+
+  const tickCount = Math.min(prompts.length, 7);
+  for (let index = 0; index < tickCount; index += 1) {
+    const tick = document.createElement("span");
+    tick.className = `outline-rail-tick${index === tickCount - 1 ? " is-active" : ""}`;
+    outlineToggle.append(tick);
+  }
+
+  prompts.forEach(({ message, index }, promptIndex) => {
+    const button = document.createElement("button");
+    button.className = "outline-item";
+    button.type = "button";
+    button.dataset.messageIndex = String(index);
+    const number = document.createElement("span");
+    number.className = "outline-number";
+    number.textContent = String(promptIndex + 1).padStart(2, "0");
+    const title = document.createElement("span");
+    title.className = "outline-title";
+    title.textContent = message.content.trim().replace(/\s+/g, " ") || "Photo question";
+    button.title = title.textContent;
+    button.append(number, title);
+    button.addEventListener("click", () => {
+      const target = document.getElementById(`chat-message-${index}`);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      outlineToggle.setAttribute("aria-expanded", "false");
+      document.querySelector(".chat-outline").classList.remove("is-open");
+    });
+    outlineList.append(button);
+  });
+  updateActiveOutline();
+}
+
+function updateActiveOutline() {
+  const buttons = Array.from(outlineList.querySelectorAll(".outline-item"));
+  if (!buttons.length) return;
+  const threshold = messagesElement.getBoundingClientRect().top + 80;
+  let activeButton = buttons[0];
+  for (const button of buttons) {
+    const index = Number(button.dataset.messageIndex);
+    const target = document.getElementById(`chat-message-${index}`);
+    if (target && target.getBoundingClientRect().top <= threshold) activeButton = button;
+  }
+  buttons.forEach((button) => button.classList.toggle("is-active", button === activeButton));
 }
 
 async function loadChatHistory(restoreLatest = false) {
@@ -422,6 +553,7 @@ async function restoreChat(chatId, showStatus = true) {
     const chat = result.chat;
     conversation.splice(0, conversation.length, ...chat.messages);
     currentChatId = chat.id;
+    activeSkillIds = Array.isArray(chat.skillIds) ? chat.skillIds : [];
     editingMessageIndex = null;
     draftBeforeEdit = null;
     pendingImage = null;
@@ -431,6 +563,7 @@ async function restoreChat(chatId, showStatus = true) {
     editMessageControls.hidden = true;
     renderMessages();
     renderHistoryList();
+    renderSkillPicker();
     updateSendButton();
     if (showStatus) {
       setActionStatus(chat.messages.some((message) => message.hadImage)
@@ -455,6 +588,7 @@ async function deleteChat(chatId) {
     if (currentChatId === chatId) {
       conversation.length = 0;
       currentChatId = createChatId();
+      activeSkillIds = [];
       editingMessageIndex = null;
       draftBeforeEdit = null;
       promptInput.value = "";
@@ -463,6 +597,7 @@ async function deleteChat(chatId) {
       attachmentPreview.hidden = true;
       editMessageControls.hidden = true;
       renderMessages();
+      renderSkillPicker();
       updateSendButton();
     }
     renderHistoryList();
@@ -472,9 +607,297 @@ async function deleteChat(chatId) {
   }
 }
 
+function setSettingsStatus(message, isError = false) {
+  settingsStatus.textContent = message;
+  settingsStatus.classList.toggle("is-error", isError);
+}
+
+function updateSkillSelectionUI() {
+  skillSelectionCount.textContent = activeSkillIds.length ? String(activeSkillIds.length) : "";
+  skillSelectionCount.hidden = activeSkillIds.length === 0;
+  useSkillButton.classList.toggle("is-selected", activeSkillIds.length > 0);
+  useSkillButton.setAttribute("aria-expanded", String(!skillPopover.hidden));
+  skillPickerList.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+    checkbox.checked = activeSkillIds.includes(checkbox.value);
+    checkbox.disabled = isLoading ||
+      (!checkbox.checked && activeSkillIds.length >= maxActiveSkills);
+  });
+}
+
+function renderSkillPicker() {
+  skillPickerList.replaceChildren();
+  if (savedSkills.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "skill-picker-empty";
+    empty.textContent = "No skills yet. Create one in Settings.";
+    skillPickerList.append(empty);
+    updateSkillSelectionUI();
+    return;
+  }
+
+  for (const skill of savedSkills) {
+    const label = document.createElement("label");
+    label.className = "skill-picker-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = skill.id;
+    checkbox.checked = activeSkillIds.includes(skill.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked && !activeSkillIds.includes(skill.id)) {
+        if (activeSkillIds.length >= maxActiveSkills) {
+          checkbox.checked = false;
+          setActionStatus(`Use up to ${maxActiveSkills} skills in one chat.`);
+          return;
+        }
+        activeSkillIds.push(skill.id);
+      } else {
+        activeSkillIds = activeSkillIds.filter((id) => id !== skill.id);
+      }
+      updateSkillSelectionUI();
+    });
+    const copy = document.createElement("span");
+    copy.className = "skill-picker-copy";
+    const name = document.createElement("span");
+    name.className = "skill-picker-name";
+    name.textContent = skill.name;
+    const summary = document.createElement("span");
+    summary.className = "skill-picker-summary";
+    summary.textContent = skill.summary;
+    copy.append(name, summary);
+    label.append(checkbox, copy);
+    skillPickerList.append(label);
+  }
+  updateSkillSelectionUI();
+}
+
+function renderSavedSkills() {
+  savedSkillsElement.replaceChildren();
+  if (savedSkills.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "saved-skills-empty";
+    empty.textContent = "No saved skills yet.";
+    savedSkillsElement.append(empty);
+    return;
+  }
+
+  for (const skill of savedSkills) {
+    const row = document.createElement("article");
+    row.className = "saved-skill";
+    const copy = document.createElement("div");
+    copy.className = "saved-skill-copy";
+    const name = document.createElement("div");
+    name.className = "saved-skill-name";
+    name.textContent = skill.name;
+    const summary = document.createElement("div");
+    summary.className = "saved-skill-summary";
+    summary.textContent = skill.summary;
+    copy.append(name, summary);
+    const instructions = document.createElement("details");
+    instructions.className = "saved-skill-details";
+    const summaryLabel = document.createElement("summary");
+    summaryLabel.textContent = "View generated instructions";
+    const instructionsText = document.createElement("pre");
+    instructionsText.textContent = skill.instructions;
+    instructions.append(summaryLabel, instructionsText);
+    copy.append(instructions);
+    if (skill.sourcePath) {
+      const source = document.createElement("div");
+      source.className = "saved-skill-source";
+      source.textContent = `${skill.sourcePath} · ${skill.fileCount} files`;
+      copy.append(source);
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "saved-skill-delete";
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.setAttribute("aria-label", `Delete skill ${skill.name}`);
+    remove.addEventListener("click", () => deleteSkill(skill.id));
+    row.append(copy, remove);
+    savedSkillsElement.append(row);
+  }
+}
+
+async function loadSkills() {
+  const response = await fetch("/api/skills");
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not load skills.");
+  savedSkills = Array.isArray(result.skills) ? result.skills : [];
+  activeSkillIds = activeSkillIds.filter((id) => savedSkills.some((skill) => skill.id === id));
+  renderSkillPicker();
+  renderSavedSkills();
+}
+
+async function loadSettings() {
+  try {
+    const [memoryResponse, skillsResponse] = await Promise.all([
+      fetch("/api/memory"),
+      fetch("/api/skills")
+    ]);
+    const [memory, skills] = await Promise.all([memoryResponse.json(), skillsResponse.json()]);
+    if (!memoryResponse.ok) throw new Error(memory.error || "Could not load memory.");
+    if (!skillsResponse.ok) throw new Error(skills.error || "Could not load skills.");
+    memoryInput.value = typeof memory.text === "string" ? memory.text : "";
+    savedSkills = Array.isArray(skills.skills) ? skills.skills : [];
+    activeSkillIds = activeSkillIds.filter((id) => savedSkills.some((skill) => skill.id === id));
+    renderSavedSkills();
+    renderSkillPicker();
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not load settings.", true);
+  }
+}
+
+async function saveMemory() {
+  saveMemoryButton.disabled = true;
+  setSettingsStatus("Saving memory…");
+  try {
+    const response = await fetch("/api/memory", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: memoryInput.value })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save memory.");
+    memoryInput.value = result.text;
+    setSettingsStatus("Memory saved locally and will be included in future replies.");
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not save memory.", true);
+  } finally {
+    saveMemoryButton.disabled = false;
+  }
+}
+
+function extractFolderPathFromRequest(text) {
+  const labeled = /(?:^|\n)\s*(?:folder|source|project)?\s*path\s*[:=]\s*["'`]?([A-Za-z]:\\[^\r\n"'`]+|\/[^\r\n"'`]+)/i.exec(text);
+  const quoted = /(["'`])([A-Za-z]:\\[^"'`]+|\/[^"'`]+)\1/.exec(text);
+  const candidate = labeled ? labeled[1] : quoted ? quoted[2] : "";
+  return candidate ? candidate.trim().replace(/[.,;]+$/, "") : "";
+}
+
+function renderFolderPreview(result) {
+  skillFolderPreview.replaceChildren();
+  const heading = document.createElement("p");
+  heading.className = "skill-preview-title";
+  heading.textContent = `${result.folderPath} · ${result.files.length} files`;
+  skillFolderPreview.append(heading);
+  for (const warning of result.warnings || []) {
+    const note = document.createElement("p");
+    note.className = "saved-skill-summary";
+    note.textContent = warning;
+    skillFolderPreview.append(note);
+  }
+  for (const file of result.files) {
+    const item = document.createElement("article");
+    item.className = "skill-preview-file";
+    const title = document.createElement("div");
+    title.className = "skill-preview-title";
+    title.textContent = file.path;
+    const content = document.createElement("pre");
+    content.textContent = file.content;
+    item.append(title, content);
+    skillFolderPreview.append(item);
+  }
+  skillFolderPreview.hidden = false;
+}
+
+async function previewSkillFolder() {
+  const folderPath = skillFolderPathInput.value.trim() ||
+    extractFolderPathFromRequest(skillRequestInput.value);
+  if (!folderPath) {
+    setSettingsStatus("Enter a folder path or add a quoted path / “Path: …” line to the skill request.", true);
+    return;
+  }
+  skillFolderPathInput.value = folderPath;
+  previewSkillFolderButton.disabled = true;
+  setSettingsStatus("Reading supported text and code files from the selected folder…");
+  try {
+    const response = await fetch("/api/skills/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderPath })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not preview the folder.");
+    renderFolderPreview(result);
+    setSettingsStatus(`Preview ready. ${result.files.length} supported files were read; no commands were run.`);
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not preview the folder.", true);
+  } finally {
+    previewSkillFolderButton.disabled = false;
+  }
+}
+
+async function createSkill(event) {
+  event.preventDefault();
+  const request = skillRequestInput.value.trim();
+  if (!request) return;
+  const createButton = document.querySelector("#create-skill-button");
+  createButton.disabled = true;
+  previewSkillFolderButton.disabled = true;
+  setSettingsStatus("Analyzing the selected files and generating a reusable skill…");
+  try {
+    const folderPath = skillFolderPathInput.value.trim() || extractFolderPathFromRequest(request);
+    if (folderPath) skillFolderPathInput.value = folderPath;
+    const response = await fetch("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelSelect.value,
+        name: skillNameInput.value.trim(),
+        request,
+        folderPath
+      })
+    });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.error || "Could not create the skill.");
+    }
+    const skill = await readSkillEventStream(response);
+    await loadSkills();
+    skillNameInput.value = "";
+    skillRequestInput.value = "";
+    skillFolderPathInput.value = "";
+    skillFolderPreview.replaceChildren();
+    skillFolderPreview.hidden = true;
+    setSettingsStatus(`“${skill.name}” was saved in the local skills folder.`);
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not create the skill.", true);
+  } finally {
+    createButton.disabled = false;
+    previewSkillFolderButton.disabled = false;
+  }
+}
+
+async function deleteSkill(skillId) {
+  const skill = savedSkills.find((item) => item.id === skillId);
+  if (!skill || !window.confirm(`Delete the skill "${skill.name}"?`)) return;
+  try {
+    const response = await fetch(`/api/skills/${encodeURIComponent(skillId)}`, { method: "DELETE" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not delete the skill.");
+    await loadSkills();
+    setSettingsStatus(`“${skill.name}” was deleted.`);
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not delete the skill.", true);
+  }
+}
+
+function openSettings() {
+  settingsDialog.hidden = false;
+  skillPopover.hidden = true;
+  setSettingsStatus("");
+  loadSettings();
+  closeSettingsButton.focus();
+}
+
+function closeSettings() {
+  settingsDialog.hidden = true;
+}
+
 function startNewChat() {
   conversation.length = 0;
   currentChatId = createChatId();
+  activeSkillIds = [];
   editingMessageIndex = null;
   draftBeforeEdit = null;
   pendingImage = null;
@@ -485,6 +908,7 @@ function startNewChat() {
   errorMessage.hidden = true;
   renderMessages();
   renderHistoryList();
+  renderSkillPicker();
   updateSendButton();
   setActionStatus("Started a new chat.");
 }
@@ -536,7 +960,8 @@ function cancelEdit() {
 async function copyText(value, kind) {
   try {
     await navigator.clipboard.writeText(value);
-    setActionStatus(`${kind === "user" ? "Input" : "Output"} copied.`);
+    const label = kind === "user" ? "Input" : kind === "code" ? "Code" : "Output";
+    setActionStatus(`${label} copied.`);
   } catch {
     setActionStatus("Clipboard access failed. Allow clipboard permission and try again.");
   }
@@ -564,6 +989,7 @@ function modelSupportsVision() {
 
 function setLoading(loading) {
   isLoading = loading;
+  messagesElement.setAttribute("aria-busy", String(loading));
   promptInput.disabled = loading;
   uploadButton.disabled = loading;
   removeAttachmentButton.disabled = loading;
@@ -571,9 +997,12 @@ function setLoading(loading) {
   modelSelect.disabled = loading || !modelsAvailable;
   newChatButton.disabled = loading;
   chatHistoryButton.disabled = loading;
+  settingsButton.disabled = loading;
+  useSkillButton.disabled = loading;
   historyList.querySelectorAll("button").forEach((button) => {
     button.disabled = loading;
   });
+  updateSkillSelectionUI();
   updateSendButton();
 }
 
@@ -700,6 +1129,48 @@ chatHistoryButton.addEventListener("click", openHistory);
 copyInputButton.addEventListener("click", () => copyLatestMessage("user"));
 copyOutputButton.addEventListener("click", () => copyLatestMessage("assistant"));
 cancelEditButton.addEventListener("click", cancelEdit);
+settingsButton.addEventListener("click", openSettings);
+closeSettingsButton.addEventListener("click", closeSettings);
+settingsDialog.addEventListener("click", (event) => {
+  if (event.target === settingsDialog) closeSettings();
+});
+saveMemoryButton.addEventListener("click", saveMemory);
+skillForm.addEventListener("submit", createSkill);
+previewSkillFolderButton.addEventListener("click", previewSkillFolder);
+skillRequestInput.addEventListener("input", () => {
+  if (!skillFolderPathInput.value.trim()) {
+    const extractedPath = extractFolderPathFromRequest(skillRequestInput.value);
+    if (extractedPath) skillFolderPathInput.value = extractedPath;
+  }
+});
+
+useSkillButton.addEventListener("click", () => {
+  skillPopover.hidden = !skillPopover.hidden;
+  updateSkillSelectionUI();
+});
+manageSkillsButton.addEventListener("click", openSettings);
+document.addEventListener("click", (event) => {
+  if (!skillPopover.hidden &&
+      !skillPopover.contains(event.target) &&
+      !useSkillButton.contains(event.target)) {
+    skillPopover.hidden = true;
+    updateSkillSelectionUI();
+  }
+});
+
+outlineToggle.addEventListener("click", () => {
+  const isOpen = document.querySelector(".chat-outline").classList.toggle("is-open");
+  outlineToggle.setAttribute("aria-expanded", String(isOpen));
+});
+messagesElement.addEventListener("scroll", updateActiveOutline);
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeSettings();
+    skillPopover.hidden = true;
+    document.querySelector(".chat-outline").classList.remove("is-open");
+    outlineToggle.setAttribute("aria-expanded", "false");
+  }
+});
 
 modelSelect.addEventListener("change", () => {
   updateSendButton();
@@ -774,6 +1245,100 @@ if (SpeechRecognition) {
   voiceButton.title = "Voice typing is not supported in this browser";
 }
 
+async function readChatEventStream(response, onToken) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let reply = "";
+  let completed = false;
+
+  function consumeLine(line) {
+    if (!line.startsWith("data:")) return;
+    let event;
+    try {
+      event = JSON.parse(line.slice(5).trim());
+    } catch {
+      throw new Error("The chat server returned an invalid response.");
+    }
+    if (event.error) throw new Error(event.error);
+    if (typeof event.token === "string") {
+      reply += event.token;
+      onToken(reply);
+    }
+    if (event.done === true) {
+      if (typeof event.reply === "string") reply = event.reply;
+      completed = true;
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop();
+    lines.forEach(consumeLine);
+    if (done) {
+      if (buffer) consumeLine(buffer);
+      break;
+    }
+  }
+
+  if (!completed || !reply.trim()) {
+    throw new Error("The response stream ended before Ollama finished.");
+  }
+  return reply;
+}
+
+async function readSkillEventStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let skill = null;
+  let completed = false;
+  let generatedCharacters = 0;
+  let nextStatusUpdate = 120;
+
+  function consumeLine(line) {
+    if (!line.startsWith("data:")) return;
+    let event;
+    try {
+      event = JSON.parse(line.slice(5).trim());
+    } catch {
+      throw new Error("The skill generator returned an invalid response.");
+    }
+    if (event.error) throw new Error(event.error);
+    if (typeof event.progress === "string") setSettingsStatus(event.progress);
+    if (typeof event.token === "string") {
+      generatedCharacters += event.token.length;
+      if (generatedCharacters >= nextStatusUpdate) {
+        setSettingsStatus("Ollama is writing the skill…");
+        nextStatusUpdate = generatedCharacters + 120;
+      }
+    }
+    if (event.done === true) {
+      skill = event.skill;
+      completed = true;
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop();
+    lines.forEach(consumeLine);
+    if (done) {
+      if (buffer) consumeLine(buffer);
+      break;
+    }
+  }
+
+  if (!completed || !skill || typeof skill.name !== "string") {
+    throw new Error("Skill generation ended before Ollama finished.");
+  }
+  return skill;
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
@@ -804,6 +1369,16 @@ form.addEventListener("submit", async (event) => {
   attachmentPreview.hidden = true;
   editMessageControls.hidden = true;
   setLoading(true);
+  const streamingMessage = {
+    role: "assistant",
+    content: "",
+    model: modelSelect.value,
+    isStreaming: true
+  };
+  const assistantBubble = addMessage(streamingMessage, conversation.length);
+  const liveOutput = assistantBubble.querySelector(".structured-output-content");
+  let pendingReply = "";
+  let streamRenderFrame = 0;
 
   try {
     const recentMessages = conversation.slice(-maxServerMessages);
@@ -818,6 +1393,7 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         chatId: currentChatId,
         model: modelSelect.value,
+        skillIds: activeSkillIds,
         messages: recentMessages.map((message, index) => ({
           role: message.role,
           content: message.content,
@@ -826,11 +1402,27 @@ form.addEventListener("submit", async (event) => {
         }))
       })
     });
-    const result = await response.json();
-
     if (!response.ok) {
+      const result = await response.json();
       throw new Error(result.error || "Something went wrong. Please try again.");
     }
+
+    if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
+      throw new Error("The chat server did not start a response stream.");
+    }
+
+    const reply = await readChatEventStream(response, (partialReply) => {
+      pendingReply = partialReply;
+      if (!streamRenderFrame) {
+        streamRenderFrame = requestAnimationFrame(() => {
+          liveOutput.textContent = pendingReply;
+          messagesElement.scrollTop = messagesElement.scrollHeight;
+          streamRenderFrame = 0;
+        });
+      }
+    });
+    if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
+    liveOutput.textContent = reply;
 
     if (image) {
       for (const message of conversation) {
@@ -842,15 +1434,22 @@ form.addEventListener("submit", async (event) => {
     }
     const assistantMessage = {
       role: "assistant",
-      content: result.reply,
-      model: modelSelect.value
+      content: reply,
+      model: modelSelect.value,
+      isArriving: true
     };
     conversation.push(assistantMessage);
-    addMessage(assistantMessage, conversation.length - 1);
+    assistantBubble.classList.remove("is-streaming");
+    assistantBubble.classList.add("is-arriving");
+    liveOutput.replaceWith(renderStructuredOutput(reply));
+    appendMessageActions(assistantMessage, conversation.length - 1, assistantBubble.querySelector(".message-column"));
+    updateToolbarState();
     await loadChatHistory();
     setActionStatus("Structured response received.");
   } catch (error) {
+    if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
     conversation.pop();
+    if (assistantBubble) assistantBubble.remove();
     if (previousConversation) {
       conversation.splice(0, conversation.length, ...previousConversation);
       editingMessageIndex = editIndex;
@@ -860,6 +1459,7 @@ form.addEventListener("submit", async (event) => {
     } else {
       userBubble.remove();
       updateToolbarState();
+      renderOutline();
     }
     promptInput.value = text;
     if (image) {
@@ -878,3 +1478,4 @@ form.addEventListener("submit", async (event) => {
 
 loadChatHistory(true);
 loadModels();
+loadSettings();

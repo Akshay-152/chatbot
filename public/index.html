@@ -28,8 +28,11 @@
         </div>
         <nav id="history-list" class="history-list" aria-label="Saved conversations"></nav>
         <div class="sidebar-footer">
+          <button id="settings-button" class="settings-button" type="button" aria-haspopup="dialog">
+            <span class="settings-icon" aria-hidden="true">⚙</span>
+            <span>Settings</span>
+          </button>
           <span class="local-indicator" aria-hidden="true"></span>
-          <span>Chats saved locally</span>
         </div>
       </aside>
 
@@ -114,6 +117,9 @@
                       <path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5m-3 0h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                     </svg>
                   </button>
+                  <button id="use-skill-button" class="use-skill-button" type="button" aria-expanded="false" aria-controls="skill-popover">
+                    skill <span id="skill-selection-count" hidden></span>
+                  </button>
                   <span class="hint">Enter to send · Shift + Enter for a new line</span>
                 </div>
                 <button id="send-button" type="submit" aria-label="Send message" disabled>
@@ -128,6 +134,74 @@
           </div>
         </section>
       </main>
+
+      <aside class="chat-outline" aria-label="Current chat outline">
+        <button id="outline-toggle" class="outline-rail" type="button" aria-label="Show current chat prompts" aria-expanded="false">
+          <span class="outline-rail-tick"></span>
+          <span class="outline-rail-tick"></span>
+          <span class="outline-rail-tick"></span>
+          <span class="outline-rail-tick"></span>
+          <span class="outline-rail-tick"></span>
+          <span class="outline-rail-tick is-active"></span>
+        </button>
+        <section class="outline-panel">
+          <header class="outline-panel-header">
+            <span>In this chat</span>
+            <span id="outline-count" class="outline-count">0</span>
+          </header>
+          <nav id="outline-list" class="outline-list" aria-label="Current chat prompts">
+            <p class="outline-empty">Your prompts will appear here.</p>
+          </nav>
+        </section>
+      </aside>
+    </div>
+
+    <div id="settings-dialog" class="modal-overlay" hidden>
+      <section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="settings-header">
+          <div>
+            <h2 id="settings-title">Settings</h2>
+            <p>Local memory and reusable model skills</p>
+          </div>
+          <button id="close-settings-button" class="icon-button" type="button" aria-label="Close settings">×</button>
+        </header>
+        <div class="settings-content">
+          <section class="settings-section">
+            <h3>Memory</h3>
+            <p>Notes here are added to the model context when you chat.</p>
+            <label class="sr-only" for="memory-input">Saved memory</label>
+            <textarea id="memory-input" maxlength="8000" rows="4" placeholder="Add facts or preferences to remember..."></textarea>
+            <button id="save-memory-button" class="secondary-button" type="button">Save memory</button>
+          </section>
+          <section class="settings-section">
+            <h3>Skills</h3>
+            <p>Saved skills live in the local <code>skills</code> folder. Select which ones to use from the composer.</p>
+            <div id="saved-skills" class="saved-skills"></div>
+            <form id="skill-form" class="skill-form">
+              <label for="skill-name">Skill name <span>optional; the model can name it</span></label>
+              <input id="skill-name" maxlength="80" placeholder="e.g. Project documentation helper">
+              <label for="skill-request">What should this skill help with?</label>
+              <textarea id="skill-request" maxlength="4000" rows="3" required placeholder="Describe the workflow or expertise to capture."></textarea>
+              <label for="skill-folder-path">Folder path <span>optional; also detected from a quoted path or “Path: …” line above</span></label>
+              <input id="skill-folder-path" maxlength="4096" placeholder="C:\projects\my-app">
+              <div class="skill-form-actions">
+                <button id="preview-skill-folder" class="secondary-button" type="button">Preview folder</button>
+                <button id="create-skill-button" class="primary-button" type="submit">Create skill with model</button>
+              </div>
+              <div id="skill-folder-preview" class="skill-folder-preview" hidden></div>
+            </form>
+          </section>
+          <p id="settings-status" class="settings-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+    </div>
+
+    <div id="skill-popover" class="skill-popover" hidden>
+      <div class="skill-popover-header">
+        <span>Skills for this chat</span>
+        <button id="manage-skills-button" type="button">Manage</button>
+      </div>
+      <div id="skill-picker-list" class="skill-picker-list"></div>
     </div>
   </body>
 </html>
