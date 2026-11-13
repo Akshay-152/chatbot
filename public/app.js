@@ -80,10 +80,30 @@ let recognition = null;
 let isListening = false;
 let activeSpeechButton = null;
 let webSearchEnabled = true;
+let settingsReturnFocus = null;
+
+const suggestedPrompts = [
+  { label: "Explain a concept", prompt: "Explain a topic in simple terms" },
+  { label: "Help me write", prompt: "Help me write or improve a message" },
+  { label: "Research a topic", prompt: "Research a current topic and cite sources" }
+];
+
+function syncAppHeight() {
+  const visualViewport = window.visualViewport;
+  const height = visualViewport ? visualViewport.height : window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+}
+
+syncAppHeight();
+window.addEventListener("resize", syncAppHeight);
+if (window.visualViewport) window.visualViewport.addEventListener("resize", syncAppHeight);
 
 function openMobileNav() {
   if (!mobileViewport.matches) return;
   sidebar.classList.add("is-open");
+  sidebar.setAttribute("role", "dialog");
+  sidebar.setAttribute("aria-modal", "true");
+  sidebar.setAttribute("aria-label", "Conversation menu");
   mobileNavBackdrop.hidden = false;
   document.body.classList.add("mobile-nav-open");
   mobileMenuButton.setAttribute("aria-expanded", "true");
@@ -93,6 +113,9 @@ function openMobileNav() {
 
 function closeMobileNav(restoreFocus = true) {
   sidebar.classList.remove("is-open");
+  sidebar.removeAttribute("role");
+  sidebar.removeAttribute("aria-modal");
+  sidebar.setAttribute("aria-label", "Conversation sidebar");
   mobileNavBackdrop.hidden = true;
   document.body.classList.remove("mobile-nav-open");
   mobileMenuButton.setAttribute("aria-expanded", "false");
@@ -299,7 +322,7 @@ function addMessage(message, index) {
   if (message.role === "assistant") {
     const author = document.createElement("span");
     author.className = "message-author";
-    author.textContent = message.isGreeting ? "Assistant" : "sir,";
+    author.textContent = "Assistant";
     messageContent.append(author);
 
     if (message.model) {
@@ -310,9 +333,24 @@ function addMessage(message, index) {
     }
 
     if (message.isGreeting) {
-      const paragraph = document.createElement("p");
-      paragraph.textContent = message.content;
-      messageContent.append(paragraph);
+      messageContent.classList.add("welcome-content");
+      article.classList.add("welcome-message");
+      const heading = document.createElement("h1");
+      heading.className = "welcome-title";
+      heading.textContent = message.content;
+      const prompts = document.createElement("div");
+      prompts.className = "suggested-prompts";
+      prompts.setAttribute("role", "group");
+      prompts.setAttribute("aria-label", "Suggested prompts");
+      suggestedPrompts.forEach(({ label, prompt }) => {
+        const button = document.createElement("button");
+        button.className = "suggested-prompt";
+        button.type = "button";
+        button.dataset.prompt = prompt;
+        button.textContent = label;
+        prompts.append(button);
+      });
+      messageContent.append(heading, prompts);
     } else {
       messageContent.append(renderStructuredOutput(message.content));
     }
@@ -1132,7 +1170,11 @@ async function deleteSkill(skillId) {
 }
 
 function openSettings() {
+  const returnFocus = mobileViewport.matches && sidebar.classList.contains("is-open")
+    ? mobileMenuButton
+    : document.activeElement;
   closeMobileNav(false);
+  settingsReturnFocus = returnFocus instanceof HTMLElement ? returnFocus : null;
   settingsDialog.hidden = false;
   skillPopover.hidden = true;
   setSettingsStatus("");
@@ -1141,7 +1183,10 @@ function openSettings() {
 }
 
 function closeSettings() {
+  if (settingsDialog.hidden) return;
   settingsDialog.hidden = true;
+  if (settingsReturnFocus && settingsReturnFocus.isConnected) settingsReturnFocus.focus();
+  settingsReturnFocus = null;
 }
 
 function startNewChat() {
@@ -1397,7 +1442,7 @@ async function loadModels() {
 
 promptInput.addEventListener("input", () => {
   promptInput.style.height = "auto";
-  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 150)}px`;
+  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 180)}px`;
   updateSendButton();
 });
 
@@ -1462,6 +1507,28 @@ mobileMenuButton.addEventListener("click", () => {
   else openMobileNav();
 });
 mobileNavBackdrop.addEventListener("click", () => closeMobileNav());
+sidebar.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || !mobileViewport.matches || !sidebar.classList.contains("is-open")) return;
+  const focusableElements = Array.from(sidebar.querySelectorAll(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
+  )).filter((element) => element.getClientRects().length > 0);
+  if (!focusableElements.length) {
+    event.preventDefault();
+    return;
+  }
+
+  const firstElement = focusableElements[0];
+  const lastElement = focusableElements[focusableElements.length - 1];
+  if (event.shiftKey &&
+      (document.activeElement === firstElement || !sidebar.contains(document.activeElement))) {
+    event.preventDefault();
+    lastElement.focus();
+  } else if (!event.shiftKey &&
+      (document.activeElement === lastElement || !sidebar.contains(document.activeElement))) {
+    event.preventDefault();
+    firstElement.focus();
+  }
+});
 mobileViewport.addEventListener("change", (event) => {
   if (!event.matches) closeMobileNav(false);
 });
@@ -1471,6 +1538,28 @@ copyOutputButton.addEventListener("click", () => copyLatestMessage("assistant"))
 cancelEditButton.addEventListener("click", cancelEdit);
 settingsButton.addEventListener("click", openSettings);
 closeSettingsButton.addEventListener("click", closeSettings);
+settingsDialog.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusableElements = Array.from(settingsDialog.querySelectorAll(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'
+  )).filter((element) => element.getClientRects().length > 0);
+  if (!focusableElements.length) {
+    event.preventDefault();
+    return;
+  }
+
+  const firstElement = focusableElements[0];
+  const lastElement = focusableElements[focusableElements.length - 1];
+  if (event.shiftKey &&
+      (document.activeElement === firstElement || !settingsDialog.contains(document.activeElement))) {
+    event.preventDefault();
+    lastElement.focus();
+  } else if (!event.shiftKey &&
+      (document.activeElement === lastElement || !settingsDialog.contains(document.activeElement))) {
+    event.preventDefault();
+    firstElement.focus();
+  }
+});
 settingsDialog.addEventListener("click", (event) => {
   if (event.target === settingsDialog) closeSettings();
 });
@@ -1531,6 +1620,13 @@ document.addEventListener("click", (event) => {
 messagesElement.addEventListener("scroll", () => {
   updateActiveOutline();
   updateScrollToBottomButton();
+});
+messagesElement.addEventListener("click", (event) => {
+  const suggestion = event.target.closest(".suggested-prompt");
+  if (!suggestion) return;
+  promptInput.value = suggestion.dataset.prompt || "";
+  promptInput.dispatchEvent(new Event("input", { bubbles: true }));
+  promptInput.focus();
 });
 window.addEventListener("resize", updateScrollToBottomButton);
 scrollToBottomButton.addEventListener("click", scrollToBottom);

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
     <meta name="theme-color" content="#101116">
     <title>Chatbot</title>
     <link rel="stylesheet" href="/styles.css">
@@ -36,7 +36,7 @@
         </div>
       </aside>
 
-      <main class="main-panel">
+      <main class="main-panel" aria-labelledby="chat-title">
         <header class="topbar">
           <div class="topbar-title">
             <button id="mobile-menu-button" class="icon-button mobile-menu-button" type="button" aria-label="Open conversation menu" aria-controls="sidebar" aria-expanded="false">
@@ -45,7 +45,7 @@
               </svg>
             </button>
             <span class="mobile-brand-mark" aria-hidden="true">✦</span>
-            <span>Ollama Chat</span>
+            <span id="chat-title">Ollama Chat</span>
             <span id="connection-status" class="status">
               <span class="status-dot"></span>
               <span id="connection-text">Connecting…</span>
@@ -80,11 +80,16 @@
 
         <section class="chat-layout" aria-label="Chat">
           <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text">
-            <article class="message assistant-message">
+            <article class="message assistant-message welcome-message">
               <div class="message-column">
-                <div class="message-content">
+                <div class="message-content welcome-content">
                   <span class="message-author">Assistant</span>
-                  <p>Welcome to Chatbot! How can I help you today?</p>
+                  <h1 class="welcome-title">Welcome to Chatbot! How can I help you today?</h1>
+                  <div class="suggested-prompts" role="group" aria-label="Suggested prompts">
+                    <button class="suggested-prompt" type="button" data-prompt="Explain a topic in simple terms">Explain a concept</button>
+                    <button class="suggested-prompt" type="button" data-prompt="Help me write or improve a message">Help me write</button>
+                    <button class="suggested-prompt" type="button" data-prompt="Research a current topic and cite sources">Research a topic</button>
+                  </div>
                 </div>
               </div>
             </article>
@@ -129,7 +134,7 @@
                   </button>
                   <button id="web-search-toggle" class="web-search-toggle is-enabled" type="button" aria-pressed="true" title="Automatically search the web and Wikipedia for current and research questions. Click to turn it off.">Web Auto</button>
                   <button id="use-skill-button" class="use-skill-button" type="button" aria-expanded="false" aria-controls="skill-popover">
-                    skill <span id="skill-selection-count" hidden></span>
+                    Skills <span id="skill-selection-count" hidden></span>
                   </button>
                   <span class="hint">Enter to send · made by Akshay PK</span>
                 </div>
