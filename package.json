@@ -1,0 +1,13 @@
+{
+  "name": "chatbot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local web chatbot powered by Ollama",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
