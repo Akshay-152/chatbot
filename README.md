@@ -29,9 +29,11 @@ The model picker defaults to **Auto · best for request** and still allows manua
 
 Attach JPEG, PNG, or WebP photos up to 2 MB. Image questions require a vision-language model; regular text models may not understand photos.
 
+Automatic web research is enabled by default with the **Web Auto** composer toggle. For prompts that ask for research or current information (such as latest news, versions, prices, or weather), the server sends up to 500 characters of the latest user prompt to DuckDuckGo's no-key HTML search. Search results are treated as untrusted context, and clickable sources are appended to the answer. Turn **Web Auto** off to keep a request local. Other prompts do not trigger a search.
+
 Voice typing uses the browser's built-in Web Speech API and requires microphone permission. Browser support varies, and speech recognition may use the browser vendor's speech service.
 
-Ollama replies stream into the chat as they are generated and are then rendered as structured Markdown. Use **Edit** on a user message to replace it and regenerate later turns, **Copy** on a message or the toolbar to copy text, and the sidebar to restore or delete conversations. Code blocks include copy and download controls. The right edge expands on hover to show numbered prompts from the current conversation; select one to scroll to that turn.
+Ollama replies stream into the chat as they are generated and are then rendered as structured Markdown. Use **Edit** on a user message to replace it and regenerate later turns, **Copy** on a message or the toolbar to copy text, and the sidebar to restore or delete conversations. On phones, use the menu button to open the sidebar for chat history, new chats, and settings. Code blocks include copy and download controls. The right edge expands on hover to show numbered prompts from the current conversation; select one to scroll to that turn.
 
 Conversations are stored as JSON in `data/chats.json` on this computer. The server creates this file automatically if it does not exist. Photo bytes are never saved; restored chats show a note where an image was attached. For privacy, this runtime data file is ignored by Git. Set `CHAT_DATA_FILE` to change its location.
 

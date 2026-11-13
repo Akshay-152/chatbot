@@ -1,6 +1,7 @@
 const form = document.querySelector("#chat-form");
 const promptInput = document.querySelector("#prompt");
 const messagesElement = document.querySelector("#messages");
+const scrollToBottomButton = document.querySelector("#scroll-to-bottom");
 const sendButton = document.querySelector("#send-button");
 const errorMessage = document.querySelector("#error-message");
 const actionStatus = document.querySelector("#action-status");
@@ -8,6 +9,10 @@ const modelSelect = document.querySelector("#model-select");
 const refreshModelsButton = document.querySelector("#refresh-models");
 const connectionStatus = document.querySelector("#connection-status");
 const connectionText = document.querySelector("#connection-text");
+const sidebar = document.querySelector("#sidebar");
+const mobileMenuButton = document.querySelector("#mobile-menu-button");
+const mobileNavBackdrop = document.querySelector("#mobile-nav-backdrop");
+const mobileViewport = window.matchMedia("(max-width: 560px)");
 const imageInput = document.querySelector("#image-input");
 const uploadButton = document.querySelector("#upload-button");
 const attachmentPreview = document.querySelector("#attachment-preview");
@@ -16,6 +21,7 @@ const attachmentName = document.querySelector("#attachment-name");
 const removeAttachmentButton = document.querySelector("#remove-attachment");
 const imageModelHint = document.querySelector("#image-model-hint");
 const voiceButton = document.querySelector("#voice-button");
+const webSearchToggle = document.querySelector("#web-search-toggle");
 const newChatButton = document.querySelector("#new-chat-button");
 const chatHistoryButton = document.querySelector("#chat-history-button");
 const copyInputButton = document.querySelector("#copy-input-button");
@@ -61,6 +67,26 @@ let isLoading = false;
 let modelsAvailable = false;
 let recognition = null;
 let isListening = false;
+let webSearchEnabled = true;
+
+function openMobileNav() {
+  if (!mobileViewport.matches) return;
+  sidebar.classList.add("is-open");
+  mobileNavBackdrop.hidden = false;
+  document.body.classList.add("mobile-nav-open");
+  mobileMenuButton.setAttribute("aria-expanded", "true");
+  mobileMenuButton.setAttribute("aria-label", "Close conversation menu");
+  newChatButton.focus();
+}
+
+function closeMobileNav(restoreFocus = true) {
+  sidebar.classList.remove("is-open");
+  mobileNavBackdrop.hidden = true;
+  document.body.classList.remove("mobile-nav-open");
+  mobileMenuButton.setAttribute("aria-expanded", "false");
+  mobileMenuButton.setAttribute("aria-label", "Open conversation menu");
+  if (restoreFocus && mobileViewport.matches) mobileMenuButton.focus();
+}
 
 function createChatId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -147,6 +173,7 @@ function addMessage(message, index) {
   article.append(messageColumn);
   messagesElement.append(article);
   messagesElement.scrollTop = messagesElement.scrollHeight;
+  updateScrollToBottomButton();
   if (message.role === "user") renderOutline();
   return article;
 }
@@ -175,7 +202,7 @@ function isBlockStart(lines, index) {
 }
 
 function appendInline(parent, text) {
-  const tokenPattern = /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*]+\*|_[^_]+_)/g;
+  const tokenPattern = /(\[((?:\\.|[^\]])+)\]\(https?:\/\/[^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*]+\*|_[^_]+_)/g;
   let start = 0;
 
   for (const match of text.matchAll(tokenPattern)) {
@@ -184,6 +211,20 @@ function appendInline(parent, text) {
     }
 
     const token = match[0];
+    if (token.startsWith("[")) {
+      const linkMatch = /^\[((?:\\.|[^\]])+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
+      if (linkMatch) {
+        const link = document.createElement("a");
+        link.href = linkMatch[2];
+        link.textContent = linkMatch[1].replace(/\\([\\[\]])/g, "$1");
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        parent.append(link);
+        start = match.index + token.length;
+        continue;
+      }
+    }
+
     let element;
     let content;
     if (token.startsWith("**") || token.startsWith("__")) {
@@ -522,7 +563,10 @@ function renderHistoryList() {
     button.disabled = isLoading;
     button.textContent = chat.title || "Conversation";
     button.title = chat.title || "Conversation";
-    button.addEventListener("click", () => restoreChat(chat.id));
+    button.addEventListener("click", () => {
+      closeMobileNav(false);
+      restoreChat(chat.id);
+    });
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "icon-button delete-history-button";
@@ -565,6 +609,7 @@ async function restoreChat(chatId, showStatus = true) {
     renderHistoryList();
     renderSkillPicker();
     updateSendButton();
+    promptInput.focus();
     if (showStatus) {
       setActionStatus(chat.messages.some((message) => message.hadImage)
         ? "Conversation restored. Photo attachments are not retained in saved history."
@@ -836,13 +881,14 @@ async function createSkill(event) {
   previewSkillFolderButton.disabled = true;
   setSettingsStatus("Analyzing the selected files and generating a reusable skill…");
   try {
+    const selectedModel = chooseModelForRequest({ requiresReasoning: true });
     const folderPath = skillFolderPathInput.value.trim() || extractFolderPathFromRequest(request);
     if (folderPath) skillFolderPathInput.value = folderPath;
     const response = await fetch("/api/skills", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: modelSelect.value,
+        model: selectedModel,
         name: skillNameInput.value.trim(),
         request,
         folderPath
@@ -883,6 +929,7 @@ async function deleteSkill(skillId) {
 }
 
 function openSettings() {
+  closeMobileNav(false);
   settingsDialog.hidden = false;
   skillPopover.hidden = true;
   setSettingsStatus("");
@@ -895,6 +942,7 @@ function closeSettings() {
 }
 
 function startNewChat() {
+  closeMobileNav(false);
   conversation.length = 0;
   currentChatId = createChatId();
   activeSkillIds = [];
@@ -911,6 +959,7 @@ function startNewChat() {
   renderSkillPicker();
   updateSendButton();
   setActionStatus("Started a new chat.");
+  promptInput.focus();
 }
 
 function editUserMessage(index) {
@@ -994,6 +1043,69 @@ function modelHasVision(model) {
     /(llava|bakllava|moondream|minicpm-v|gemma3|vision|qwen[\w.-]*vl)/i.test(name);
 }
 
+function getModelParameterSize(model) {
+  const parameterSize = model.parameterSize ||
+    (model.details && model.details.parameter_size) ||
+    "";
+  const match = /(\d+(?:\.\d+)?)\s*([bm])\b/i.exec(String(parameterSize)) ||
+    /(\d+(?:\.\d+)?)([bm])\b/i.exec(String(model.name || ""));
+  if (match) {
+    const count = Number(match[1]);
+    return match[2].toLowerCase() === "m" ? count / 1000 : count;
+  }
+  return Number.isFinite(model.sizeBytes) && model.sizeBytes > 0
+    ? model.sizeBytes / (1024 ** 3)
+    : 0;
+}
+
+function getModelReasoningScore(model) {
+  const name = `${model.name || ""} ${model.family || ""}`.toLowerCase();
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+  let score = getModelParameterSize(model) * 10;
+
+  if (capabilities.some((capability) => /reason|think/i.test(capability))) score += 120;
+  if (/(deepseek-r1|qwq|reasoner)/i.test(name)) score += 100;
+  else if (/qwen3/i.test(name)) score += 80;
+  else if (/(deepseek|qwen2\.5|phi-4)/i.test(name)) score += 45;
+  else if (/gemma3|llama3\.3|mistral/i.test(name)) score += 25;
+
+  return score;
+}
+
+function chooseModelForRequest({ requiresVision = false, requiresReasoning = false } = {}) {
+  if (modelSelect.value !== "auto") return modelSelect.value;
+
+  const candidates = availableModels.filter((model) => !requiresVision || modelHasVision(model));
+  if (!candidates.length) {
+    throw new Error(requiresVision
+      ? "Auto selection needs an installed vision-capable model. Install one or select it manually."
+      : "No installed Ollama model is available for automatic selection.");
+  }
+  candidates.sort((left, right) => {
+    const difference = requiresReasoning
+      ? getModelReasoningScore(right) - getModelReasoningScore(left)
+      : getModelParameterSize(left) - getModelParameterSize(right);
+    return difference || left.name.localeCompare(right.name);
+  });
+  return candidates[0].name;
+}
+
+function promptNeedsReasoning(prompt) {
+  return /\b(calculate|calculation|compute|solve|equation|math|mathematics|logic|reasoning|prove|proof|analy[sz]e|compare|derive|deduce)\b|step[- ]by[- ]step|(?:\d+\s*[+\-*\/=]\s*\d+)/i.test(prompt);
+}
+
+function isAtBottom() {
+  return messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 80;
+}
+
+function updateScrollToBottomButton() {
+  scrollToBottomButton.hidden = isAtBottom();
+}
+
+function scrollToBottom() {
+  messagesElement.scrollTo({ top: messagesElement.scrollHeight, behavior: "smooth" });
+}
+
 function setLoading(loading) {
   isLoading = loading;
   messagesElement.setAttribute("aria-busy", String(loading));
@@ -1001,6 +1113,7 @@ function setLoading(loading) {
   uploadButton.disabled = loading;
   removeAttachmentButton.disabled = loading;
   voiceButton.disabled = loading || !SpeechRecognition;
+  webSearchToggle.disabled = loading;
   modelSelect.disabled = loading || !modelsAvailable;
   newChatButton.disabled = loading;
   chatHistoryButton.disabled = loading;
@@ -1136,6 +1249,14 @@ removeAttachmentButton.addEventListener("click", () => {
 
 refreshModelsButton.addEventListener("click", loadModels);
 newChatButton.addEventListener("click", startNewChat);
+mobileMenuButton.addEventListener("click", () => {
+  if (sidebar.classList.contains("is-open")) closeMobileNav();
+  else openMobileNav();
+});
+mobileNavBackdrop.addEventListener("click", () => closeMobileNav());
+mobileViewport.addEventListener("change", (event) => {
+  if (!event.matches) closeMobileNav(false);
+});
 chatHistoryButton.addEventListener("click", openHistory);
 copyInputButton.addEventListener("click", () => copyLatestMessage("user"));
 copyOutputButton.addEventListener("click", () => copyLatestMessage("assistant"));
@@ -1173,11 +1294,16 @@ outlineToggle.addEventListener("click", () => {
   const isOpen = document.querySelector(".chat-outline").classList.toggle("is-open");
   outlineToggle.setAttribute("aria-expanded", String(isOpen));
 });
-messagesElement.addEventListener("scroll", updateActiveOutline);
+messagesElement.addEventListener("scroll", () => {
+  updateActiveOutline();
+  updateScrollToBottomButton();
+});
+scrollToBottomButton.addEventListener("click", scrollToBottom);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeSettings();
     skillPopover.hidden = true;
+    closeMobileNav();
     document.querySelector(".chat-outline").classList.remove("is-open");
     outlineToggle.setAttribute("aria-expanded", "false");
   }
@@ -1185,6 +1311,17 @@ window.addEventListener("keydown", (event) => {
 
 modelSelect.addEventListener("change", () => {
   updateSendButton();
+});
+
+webSearchToggle.addEventListener("click", () => {
+  webSearchEnabled = !webSearchEnabled;
+  webSearchToggle.classList.toggle("is-enabled", webSearchEnabled);
+  webSearchToggle.setAttribute("aria-pressed", String(webSearchEnabled));
+  webSearchToggle.textContent = webSearchEnabled ? "Web Auto" : "Web Off";
+  webSearchToggle.title = webSearchEnabled
+    ? "Automatic web research is on for current and research questions. Click to turn it off."
+    : "Web research is off. Click to allow automatic searches for current and research questions.";
+  setActionStatus(webSearchEnabled ? "Automatic web research enabled." : "Web research disabled.");
 });
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1363,6 +1500,16 @@ form.addEventListener("submit", async (event) => {
   errorMessage.hidden = true;
   const image = pendingImage;
   const content = text || "Describe this image.";
+  let selectedModel;
+  try {
+    selectedModel = chooseModelForRequest({
+      requiresVision: Boolean(image),
+      requiresReasoning: activeSkillIds.length > 0 || promptNeedsReasoning(content)
+    });
+  } catch (error) {
+    showError(error.message);
+    return;
+  }
   const editIndex = editingMessageIndex;
   const previousConversation = editIndex === null ? null : conversation.slice();
   const previousDraft = draftBeforeEdit;
@@ -1388,7 +1535,7 @@ form.addEventListener("submit", async (event) => {
   const streamingMessage = {
     role: "assistant",
     content: "",
-    model: modelSelect.value === "auto" ? "Auto" : modelSelect.value,
+    model: selectedModel,
     isStreaming: true
   };
   const assistantBubble = addMessage(streamingMessage, conversation.length);
@@ -1408,7 +1555,8 @@ form.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chatId: currentChatId,
-        model: modelSelect.value,
+        model: selectedModel,
+        webSearch: webSearchEnabled,
         skillIds: activeSkillIds,
         messages: recentMessages.map((message, index) => ({
           role: message.role,
@@ -1433,8 +1581,10 @@ form.addEventListener("submit", async (event) => {
         pendingReply = partialReply;
         if (!streamRenderFrame) {
           streamRenderFrame = requestAnimationFrame(() => {
+            const shouldFollow = isAtBottom();
             liveOutput.textContent = pendingReply;
-            messagesElement.scrollTop = messagesElement.scrollHeight;
+            if (shouldFollow) messagesElement.scrollTop = messagesElement.scrollHeight;
+            updateScrollToBottomButton();
             streamRenderFrame = 0;
           });
         }
@@ -1445,7 +1595,8 @@ form.addEventListener("submit", async (event) => {
       }
     );
     const reply = streamResult.reply;
-    const responseModel = streamResult.model || modelSelect.value;
+    const responseModel = streamResult.model || selectedModel;
+    const shouldFollow = isAtBottom();
     if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
     liveOutput.textContent = reply;
 
@@ -1468,6 +1619,8 @@ form.addEventListener("submit", async (event) => {
     assistantBubble.classList.add("is-arriving");
     liveOutput.replaceWith(renderStructuredOutput(reply));
     appendMessageActions(assistantMessage, conversation.length - 1, assistantBubble.querySelector(".message-column"));
+    if (shouldFollow) messagesElement.scrollTop = messagesElement.scrollHeight;
+    updateScrollToBottomButton();
     updateToolbarState();
     await loadChatHistory();
     setActionStatus("Structured response received.");

@@ -10,7 +10,7 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Conversation sidebar">
+      <aside id="sidebar" class="sidebar" aria-label="Conversation sidebar">
         <a class="brand" href="/" aria-label="Chatbot home">
           <span class="brand-mark" aria-hidden="true">✦</span>
           <span>Chatbot</span>
@@ -39,6 +39,11 @@
       <main class="main-panel">
         <header class="topbar">
           <div class="topbar-title">
+            <button id="mobile-menu-button" class="icon-button mobile-menu-button" type="button" aria-label="Open conversation menu" aria-controls="sidebar" aria-expanded="false">
+              <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
+                <path d="M3 5.5h14M3 10h14M3 14.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </button>
             <span class="mobile-brand-mark" aria-hidden="true">✦</span>
             <span>Ollama Chat</span>
             <span id="connection-status" class="status">
@@ -89,6 +94,7 @@
             <p id="error-message" class="error-message" role="alert" hidden></p>
             <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
             <form id="chat-form" class="composer">
+              <button id="scroll-to-bottom" class="scroll-to-bottom" type="button" aria-label="Scroll to latest message" title="Scroll to latest message" hidden>↓</button>
               <label class="sr-only" for="prompt">Message</label>
               <textarea id="prompt" name="prompt" rows="1" maxlength="4000" placeholder="Message your assistant..."></textarea>
               <div id="attachment-preview" class="attachment-preview" hidden>
@@ -117,6 +123,7 @@
                       <path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5m-3 0h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                     </svg>
                   </button>
+                  <button id="web-search-toggle" class="web-search-toggle is-enabled" type="button" aria-pressed="true" title="Automatic web research is on for current and research questions. Click to turn it off.">Web Auto</button>
                   <button id="use-skill-button" class="use-skill-button" type="button" aria-expanded="false" aria-controls="skill-popover">
                     skill <span id="skill-selection-count" hidden></span>
                   </button>
@@ -155,6 +162,7 @@
         </section>
       </aside>
     </div>
+    <button id="mobile-nav-backdrop" class="mobile-nav-backdrop" type="button" aria-label="Dismiss conversation menu overlay" hidden></button>
 
     <div id="settings-dialog" class="modal-overlay" hidden>
       <section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">

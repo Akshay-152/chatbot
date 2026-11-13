@@ -446,6 +446,9 @@ button { color: inherit; }
 .settings-status { min-height: 15px; margin: 10px 0 0; color: #aebfe0; font-size: 10px; }
 .settings-status.is-error { color: #ff9a9e; }
 
+.mobile-menu-button,
+.mobile-nav-backdrop { display: none; }
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -890,6 +893,8 @@ button { color: inherit; }
   font-size: 0.92em;
 }
 
+.structured-output-content a { color: #9cc0ff; text-decoration: underline; text-underline-offset: 2px; }
+.structured-output-content a:hover { color: #c3d9ff; }
 .structured-output-content pre code { padding: 0; background: transparent; }
 .structured-output-content hr { margin: 1em 0; border: 0; border-top: 1px solid #34353c; }
 
@@ -926,6 +931,7 @@ button { color: inherit; }
 }
 
 .composer {
+  position: relative;
   padding: 12px 14px 10px;
   border: 1px solid #3b3c45;
   border-radius: 16px;
@@ -933,6 +939,29 @@ button { color: inherit; }
   box-shadow: 0 10px 30px #0000001c;
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
+
+.scroll-to-bottom {
+  position: absolute;
+  z-index: 3;
+  top: -40px;
+  right: 12px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #444651;
+  border-radius: 50%;
+  color: #e2e2e9;
+  background: #25262d;
+  box-shadow: 0 4px 14px #00000050;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scroll-to-bottom:hover { background: #34353d; }
+.scroll-to-bottom[hidden] { display: none; }
 
 .composer:focus-within {
   border-color: #666873;
@@ -966,6 +995,25 @@ textarea::placeholder { color: #858690; }
 .composer-tools { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .composer-tool { width: 31px; height: 31px; }
 .composer-tool svg { width: 19px; height: 19px; }
+
+.web-search-toggle {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border: 1px solid #3b3c45;
+  border-radius: 8px;
+  color: #aeb0bb;
+  background: #25262d;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.web-search-toggle.is-enabled {
+  border-color: #3e5b7d;
+  color: #b7d0f7;
+  background: #1e2938;
+}
+
+.web-search-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .icon-button.is-listening {
   color: #ff7b82;
@@ -1106,6 +1154,8 @@ textarea::placeholder { color: #858690; }
 @media (max-width: 760px) {
   .sidebar { width: 220px; flex-basis: 220px; }
   .topbar { padding: 0 16px; }
+  .topbar-tools > .icon-button { display: none; }
+  .model-picker select { max-width: 145px; }
   .messages { padding: 28px 20px 20px; }
   .composer-area { padding: 0 20px 12px; }
   .status { display: none; }
@@ -1116,21 +1166,58 @@ textarea::placeholder { color: #858690; }
 }
 
 @media (max-width: 560px) {
-  .sidebar { display: none; }
+  .sidebar {
+    position: fixed;
+    z-index: 21;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    width: min(300px, calc(100vw - 54px));
+    height: 100vh;
+    height: 100dvh;
+    flex-basis: auto;
+    transform: translateX(-105%);
+    visibility: hidden;
+    box-shadow: 12px 0 35px #00000052;
+    transition: transform 200ms ease, visibility 0s linear 200ms;
+  }
+  .sidebar.is-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 200ms ease;
+  }
+  .mobile-nav-backdrop:not([hidden]) {
+    position: fixed;
+    z-index: 20;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: #08090dcc;
+  }
+  body.mobile-nav-open { overflow: hidden; }
+  .mobile-menu-button { display: grid; width: 30px; height: 30px; }
   .topbar { height: 56px; padding: 0 12px; }
   .mobile-brand-mark { display: grid; width: 25px; height: 25px; font-size: 14px; }
-  .topbar-title { gap: 8px; }
+  .topbar-title { min-width: 0; gap: 8px; }
   .topbar-tools { gap: 0; }
-  .topbar-tools > .icon-button { display: none; }
   .model-picker { gap: 0; padding-left: 6px; }
   .model-picker select { max-width: 145px; }
   .messages { gap: 24px; padding: 22px 14px 16px; }
   .composer-area { padding: 0 10px 10px; }
   .composer { padding: 10px 10px 8px; }
-  .hint { max-width: 112px; line-height: 1.35; }
+  .hint { display: none; }
   .composer-tools { gap: 3px; }
   .user-message .message-column { max-width: 90%; }
   .skill-popover { left: 10px; bottom: 96px; }
   .settings-panel { max-height: calc(100vh - 20px); }
   .modal-overlay { padding: 10px; }
+}
+
+@media (max-width: 390px) {
+  .topbar-title > span:nth-child(3) { display: none; }
+  .model-picker select { max-width: 120px; }
 }

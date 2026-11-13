@@ -137,6 +137,8 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const pageHtml = await page.text();
   assert.match(pageHtml, /image-input/);
   assert.match(pageHtml, /voice-button/);
+  assert.match(pageHtml, /mobile-menu-button/);
+  assert.match(pageHtml, /mobile-nav-backdrop/);
 
   const modelResponse = await fetch(`${appUrl}/api/models`);
   assert.equal(modelResponse.status, 200);
@@ -372,4 +374,50 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(reasoningAutoResponse.status, 200);
   await reasoningAutoResponse.text();
   assert.equal(receivedChats[6].model, "deepseek-r1:8b");
+
+  const searchQueries = [];
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "html.duckduckgo.com") {
+      searchQueries.push(url.searchParams.get("q"));
+      return new Response(
+        '<div class="result"><h2><a class="result__a" href="https://example.com/research">Research Source</a></h2><a class="result__snippet">Current findings &amp; methodology</a></div>',
+        { status: 200, headers: { "Content-Type": "text/html" } }
+      );
+    }
+    return originalFetch(input, options);
+  });
+
+  const webDisabledResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-web-disabled",
+      model: "gemma4:e2b",
+      webSearch: false,
+      messages: [{ role: "user", content: "Research the latest findings about local model performance." }]
+    })
+  });
+  assert.equal(webDisabledResponse.status, 200);
+  await webDisabledResponse.text();
+  assert.deepEqual(searchQueries, []);
+
+  const webResearchResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-web-research",
+      model: "gemma4:e2b",
+      webSearch: true,
+      messages: [{ role: "user", content: "Research the latest findings about local model performance." }]
+    })
+  });
+  assert.equal(webResearchResponse.status, 200);
+  const webResearchEvents = (await webResearchResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.replace(/^data:\s*/, ""))
+  );
+  assert.match(webResearchEvents.at(-1).reply, /### Sources[\s\S]*\[Research Source\]\(https:\/\/example\.com\/research\)/);
+  assert.match(receivedChats[8].messages[0].content, /Current findings & methodology/);
+  assert.deepEqual(searchQueries, ["Research the latest findings about local model performance."]);
 });
