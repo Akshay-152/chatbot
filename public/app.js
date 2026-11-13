@@ -30,8 +30,10 @@ const editMessageControls = document.querySelector("#edit-message-controls");
 const cancelEditButton = document.querySelector("#cancel-edit-button");
 const historyList = document.querySelector("#history-list");
 const outlineToggle = document.querySelector("#outline-toggle");
+const chatOutline = document.querySelector(".chat-outline");
 const outlineList = document.querySelector("#outline-list");
 const outlineCount = document.querySelector("#outline-count");
+const hoverOutlineQuery = window.matchMedia("(hover: hover) and (pointer: fine)");
 const settingsButton = document.querySelector("#settings-button");
 const settingsDialog = document.querySelector("#settings-dialog");
 const closeSettingsButton = document.querySelector("#close-settings-button");
@@ -69,6 +71,7 @@ let isLoading = false;
 let modelsAvailable = false;
 let recognition = null;
 let isListening = false;
+let activeSpeechButton = null;
 let webSearchEnabled = true;
 
 function openMobileNav() {
@@ -94,6 +97,77 @@ function createChatId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function updateOutlineExpanded() {
+  const isExpanded = chatOutline.classList.contains("is-open") ||
+    (!chatOutline.classList.contains("is-dismissed") &&
+      ((hoverOutlineQuery.matches && chatOutline.matches(":hover")) ||
+        chatOutline.contains(document.activeElement)));
+  outlineToggle.setAttribute("aria-expanded", String(isExpanded));
+}
+
+function openOutline() {
+  chatOutline.classList.remove("is-dismissed");
+  chatOutline.classList.add("is-open");
+  updateOutlineExpanded();
+}
+
+function closeOutline() {
+  chatOutline.classList.remove("is-open");
+  chatOutline.classList.add("is-dismissed");
+  if (chatOutline.contains(document.activeElement)) document.activeElement.blur();
+  updateOutlineExpanded();
+}
+
+function stopSpeechPlayback() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if (activeSpeechButton) {
+    activeSpeechButton.classList.remove("is-speaking");
+    activeSpeechButton.setAttribute("aria-label", "Read response aloud");
+    activeSpeechButton.title = "Read response aloud";
+  }
+  activeSpeechButton = null;
+}
+
+function readMessageAloud(message, article, button) {
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    setActionStatus("Text-to-speech is not supported in this browser.");
+    return;
+  }
+  if (activeSpeechButton === button) {
+    stopSpeechPlayback();
+    return;
+  }
+
+  const output = article.querySelector(".structured-output-content");
+  const text = (output ? output.innerText : message.content).trim();
+  if (!text) return;
+
+  stopSpeechPlayback();
+  const utterance = new window.SpeechSynthesisUtterance(text);
+  utterance.lang = /[\u0D00-\u0D7F]/.test(text) ? "ml-IN" : navigator.language || "en-US";
+  utterance.onend = () => {
+    if (activeSpeechButton === button) stopSpeechPlayback();
+  };
+  utterance.onerror = (event) => {
+    if (activeSpeechButton !== button) return;
+    stopSpeechPlayback();
+    if (event.error !== "canceled") {
+      setActionStatus("Text-to-speech failed. Check your browser's speech settings.");
+    }
+  };
+
+  activeSpeechButton = button;
+  button.classList.add("is-speaking");
+  button.setAttribute("aria-label", "Stop reading aloud");
+  button.title = "Stop reading aloud";
+  try {
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    stopSpeechPlayback();
+    setActionStatus("Text-to-speech could not start.");
+  }
+}
+
 function appendMessageActions(message, index, messageColumn) {
   const actions = document.createElement("div");
   actions.className = "message-actions";
@@ -112,6 +186,18 @@ function appendMessageActions(message, index, messageColumn) {
   copyButton.setAttribute("aria-label", message.role === "user" ? "Copy this input" : "Copy this output");
   copyButton.addEventListener("click", () => copyText(message.content, message.role));
   actions.append(copyButton);
+
+  if (message.role === "assistant") {
+    const readButton = document.createElement("button");
+    readButton.className = "read-aloud-button";
+    readButton.type = "button";
+    readButton.title = "Read response aloud";
+    readButton.setAttribute("aria-label", "Read response aloud");
+    readButton.innerHTML = '<svg aria-hidden="true" viewBox="0 0 20 20" fill="none"><path d="M3 8v4h3l4 3V5L6 8H3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M13 7a4 4 0 0 1 0 6m2-8a7 7 0 0 1 0 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    readButton.addEventListener("click", () => readMessageAloud(message, messageColumn, readButton));
+    actions.append(readButton);
+  }
+
   messageColumn.append(actions);
 }
 
@@ -451,6 +537,7 @@ function updateToolbarState() {
 }
 
 function renderMessages() {
+  stopSpeechPlayback();
   messagesElement.replaceChildren();
   if (conversation.length === 0) {
     addMessage({
@@ -504,8 +591,7 @@ function renderOutline() {
     button.addEventListener("click", () => {
       const target = document.getElementById(`chat-message-${index}`);
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-      outlineToggle.setAttribute("aria-expanded", "false");
-      document.querySelector(".chat-outline").classList.remove("is-open");
+      closeOutline();
     });
     outlineList.append(button);
   });
@@ -1128,7 +1214,8 @@ function isAtBottom() {
 }
 
 function updateScrollToBottomButton() {
-  scrollToBottomButton.hidden = isAtBottom();
+  scrollToBottomButton.hidden =
+    messagesElement.scrollHeight <= messagesElement.clientHeight + 1;
 }
 
 function scrollToBottom() {
@@ -1321,21 +1408,46 @@ document.addEventListener("click", (event) => {
 });
 
 outlineToggle.addEventListener("click", () => {
-  const isOpen = document.querySelector(".chat-outline").classList.toggle("is-open");
-  outlineToggle.setAttribute("aria-expanded", String(isOpen));
+  const isOpen = chatOutline.classList.contains("is-open");
+  const isHovered = hoverOutlineQuery.matches && chatOutline.matches(":hover");
+  if (chatOutline.classList.contains("is-dismissed") || (!isOpen && !isHovered)) {
+    openOutline();
+  } else {
+    closeOutline();
+  }
+});
+chatOutline.addEventListener("pointerenter", () => {
+  if (!chatOutline.classList.contains("is-open")) {
+    chatOutline.classList.remove("is-dismissed");
+  }
+  updateOutlineExpanded();
+});
+chatOutline.addEventListener("pointerleave", () => {
+  if (!chatOutline.classList.contains("is-open")) {
+    chatOutline.classList.remove("is-dismissed");
+  }
+  updateOutlineExpanded();
+});
+chatOutline.addEventListener("focusin", updateOutlineExpanded);
+chatOutline.addEventListener("focusout", () => requestAnimationFrame(updateOutlineExpanded));
+document.addEventListener("click", (event) => {
+  if (!chatOutline.contains(event.target) &&
+      (chatOutline.classList.contains("is-open") || chatOutline.matches(":focus-within"))) {
+    closeOutline();
+  }
 });
 messagesElement.addEventListener("scroll", () => {
   updateActiveOutline();
   updateScrollToBottomButton();
 });
+window.addEventListener("resize", updateScrollToBottomButton);
 scrollToBottomButton.addEventListener("click", scrollToBottom);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeSettings();
     skillPopover.hidden = true;
     closeMobileNav();
-    document.querySelector(".chat-outline").classList.remove("is-open");
-    outlineToggle.setAttribute("aria-expanded", "false");
+    closeOutline();
   }
 });
 

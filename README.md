@@ -31,7 +31,7 @@ Attach JPEG, PNG, or WebP photos up to 2 MB. Image questions require a vision-la
 
 Automatic web research is enabled by default with the **Web Auto** composer toggle. For prompts that ask for research or current information (such as latest news, versions, prices, or weather), the server sends up to 500 characters of the latest user prompt to DuckDuckGo's no-key HTML search. Search results are treated as untrusted context, and clickable sources are appended to the answer. Turn **Web Auto** off to keep a request local. Other prompts do not trigger a search.
 
-Voice typing uses the browser's built-in Web Speech API and requires microphone permission. Browser support varies, and speech recognition may use the browser vendor's speech service.
+Voice typing and response read-aloud use the browser's Web Speech APIs. Voice typing requires microphone permission; read-aloud adds a speaker button under each assistant response and can be stopped by pressing it again. Browser and voice/language support vary, and speech recognition may use the browser vendor's speech service.
 
 Ollama replies stream into the chat as they are generated and are then rendered as structured Markdown. Use **Edit** on a user message to replace it and regenerate later turns, **Copy** on a message or the toolbar to copy text, and the sidebar to restore or delete conversations. On phones, use the menu button to open the sidebar for chat history, new chats, and settings. Code blocks include copy and download controls. The right edge expands on hover to show numbered prompts from the current conversation; select one to scroll to that turn.
 
