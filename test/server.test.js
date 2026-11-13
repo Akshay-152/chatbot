@@ -85,10 +85,12 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const previousHost = process.env.OLLAMA_HOST;
   const previousDataFile = process.env.CHAT_DATA_FILE;
   const previousMemoryFile = process.env.MEMORY_DATA_FILE;
+  const previousPersonalityFile = process.env.PERSONALITY_DATA_FILE;
   const previousSkillDirectory = process.env.SKILL_DATA_DIR;
   const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ollama-chat-test-"));
   const dataFile = path.join(testDirectory, "data", "chats.json");
   const memoryFile = path.join(testDirectory, "data", "memory.json");
+  const personalityFile = path.join(testDirectory, "data", "personality.json");
   const skillDirectory = path.join(testDirectory, "skills");
   const projectDirectory = path.join(testDirectory, "source-project");
   fs.mkdirSync(path.join(projectDirectory, "src"), { recursive: true });
@@ -102,6 +104,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   process.env.OLLAMA_HOST = `http://127.0.0.1:${ollamaPort}`;
   process.env.CHAT_DATA_FILE = dataFile;
   process.env.MEMORY_DATA_FILE = memoryFile;
+  process.env.PERSONALITY_DATA_FILE = personalityFile;
   process.env.SKILL_DATA_DIR = skillDirectory;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const appUrl = `http://127.0.0.1:${server.address().port}`;
@@ -124,6 +127,11 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     } else {
       process.env.MEMORY_DATA_FILE = previousMemoryFile;
     }
+    if (previousPersonalityFile === undefined) {
+      delete process.env.PERSONALITY_DATA_FILE;
+    } else {
+      process.env.PERSONALITY_DATA_FILE = previousPersonalityFile;
+    }
     if (previousSkillDirectory === undefined) {
       delete process.env.SKILL_DATA_DIR;
     } else {
@@ -137,6 +145,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const pageHtml = await page.text();
   assert.match(pageHtml, /image-input/);
   assert.match(pageHtml, /voice-button/);
+  assert.match(pageHtml, /personality-select/);
   assert.match(pageHtml, /mobile-menu-button/);
   assert.match(pageHtml, /mobile-nav-backdrop/);
 
@@ -168,6 +177,24 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     ]
   });
 
+  const defaultPersonalityResponse = await fetch(`${appUrl}/api/personality`);
+  assert.equal(defaultPersonalityResponse.status, 200);
+  assert.deepEqual(await defaultPersonalityResponse.json(), { personality: "casual", updatedAt: null });
+  const invalidPersonalityResponse = await fetch(`${appUrl}/api/personality`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ personality: "pirate" })
+  });
+  assert.equal(invalidPersonalityResponse.status, 400);
+  const loverPersonalityResponse = await fetch(`${appUrl}/api/personality`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ personality: "lover" })
+  });
+  assert.equal(loverPersonalityResponse.status, 200);
+  assert.equal((await loverPersonalityResponse.json()).personality, "lover");
+  assert.equal(JSON.parse(fs.readFileSync(personalityFile, "utf8")).personality, "lover");
+
   const chatResponse = await fetch(`${appUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -192,7 +219,15 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(streamEvents.find((event) => event.model).model, "gemma4:e2b");
   assert.equal(receivedChats[0].model, "gemma4:e2b");
   assert.equal(receivedChats[0].stream, true);
-  assert.deepEqual(receivedChats[0].messages[0].images, ["aGVsbG8="]);
+  assert.match(receivedChats[0].messages[0].content, /warm, affectionate, playful/);
+  assert.deepEqual(receivedChats[0].messages.find((message) => message.images).images, ["aGVsbG8="]);
+
+  const casualPersonalityResponse = await fetch(`${appUrl}/api/personality`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ personality: "casual" })
+  });
+  assert.equal(casualPersonalityResponse.status, 200);
 
   const historyResponse = await fetch(`${appUrl}/api/history`);
   assert.equal(historyResponse.status, 200);

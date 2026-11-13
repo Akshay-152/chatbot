@@ -175,6 +175,17 @@
         </header>
         <div class="settings-content">
           <section class="settings-section">
+            <h3>Chat personality</h3>
+            <p>Choose the assistant's tone. Casual mirrors your language and keeps replies conversational.</p>
+            <label for="personality-select">Style</label>
+            <select id="personality-select">
+              <option value="casual">Casual</option>
+              <option value="lover">Lover</option>
+              <option value="professional">Professional</option>
+            </select>
+            <button id="save-personality-button" class="secondary-button" type="button">Save personality</button>
+          </section>
+          <section class="settings-section">
             <h3>Memory</h3>
             <p>Notes here are added to the model context when you chat.</p>
             <label class="sr-only" for="memory-input">Saved memory</label>

@@ -35,6 +35,8 @@ const outlineCount = document.querySelector("#outline-count");
 const settingsButton = document.querySelector("#settings-button");
 const settingsDialog = document.querySelector("#settings-dialog");
 const closeSettingsButton = document.querySelector("#close-settings-button");
+const personalitySelect = document.querySelector("#personality-select");
+const savePersonalityButton = document.querySelector("#save-personality-button");
 const memoryInput = document.querySelector("#memory-input");
 const saveMemoryButton = document.querySelector("#save-memory-button");
 const savedSkillsElement = document.querySelector("#saved-skills");
@@ -775,13 +777,20 @@ async function loadSkills() {
 
 async function loadSettings() {
   try {
-    const [memoryResponse, skillsResponse] = await Promise.all([
+    const [personalityResponse, memoryResponse, skillsResponse] = await Promise.all([
+      fetch("/api/personality"),
       fetch("/api/memory"),
       fetch("/api/skills")
     ]);
-    const [memory, skills] = await Promise.all([memoryResponse.json(), skillsResponse.json()]);
+    const [personality, memory, skills] = await Promise.all([
+      personalityResponse.json(),
+      memoryResponse.json(),
+      skillsResponse.json()
+    ]);
+    if (!personalityResponse.ok) throw new Error(personality.error || "Could not load chat personality.");
     if (!memoryResponse.ok) throw new Error(memory.error || "Could not load memory.");
     if (!skillsResponse.ok) throw new Error(skills.error || "Could not load skills.");
+    personalitySelect.value = personality.personality;
     memoryInput.value = typeof memory.text === "string" ? memory.text : "";
     savedSkills = Array.isArray(skills.skills) ? skills.skills : [];
     activeSkillIds = activeSkillIds.filter((id) => savedSkills.some((skill) => skill.id === id));
@@ -789,6 +798,26 @@ async function loadSettings() {
     renderSkillPicker();
   } catch (error) {
     setSettingsStatus(error.message || "Could not load settings.", true);
+  }
+}
+
+async function savePersonality() {
+  savePersonalityButton.disabled = true;
+  setSettingsStatus("Saving chat personality…");
+  try {
+    const response = await fetch("/api/personality", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personality: personalitySelect.value })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save chat personality.");
+    personalitySelect.value = result.personality;
+    setSettingsStatus(`${personalitySelect.options[personalitySelect.selectedIndex].text} personality saved for future replies.`);
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not save chat personality.", true);
+  } finally {
+    savePersonalityButton.disabled = false;
   }
 }
 
@@ -1267,6 +1296,7 @@ settingsDialog.addEventListener("click", (event) => {
   if (event.target === settingsDialog) closeSettings();
 });
 saveMemoryButton.addEventListener("click", saveMemory);
+savePersonalityButton.addEventListener("click", savePersonality);
 skillForm.addEventListener("submit", createSkill);
 previewSkillFolderButton.addEventListener("click", previewSkillFolder);
 skillRequestInput.addEventListener("input", () => {

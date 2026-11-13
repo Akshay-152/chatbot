@@ -358,7 +358,8 @@ button { color: inherit; }
 .settings-section > p { margin: 0 0 10px; color: #92939d; font-size: 11px; line-height: 1.55; }
 
 .settings-content textarea,
-.settings-content input {
+.settings-content input,
+.settings-content select {
   display: block;
   width: 100%;
   margin: 6px 0 10px;
@@ -373,7 +374,8 @@ button { color: inherit; }
 
 .settings-content textarea { min-height: 72px; resize: vertical; }
 .settings-content input:focus,
-.settings-content textarea:focus { border-color: #688fd0; }
+.settings-content textarea:focus,
+.settings-content select:focus { border-color: #688fd0; }
 .settings-content input::placeholder,
 .settings-content textarea::placeholder { color: #777984; }
 .settings-content code { color: #c5c6cf; }

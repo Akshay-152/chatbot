@@ -24,6 +24,20 @@ const maxMemoryLength = 80000;
 const maxWebSearchResults = 5;
 const maxWebSearchQueryLength = 500;
 const webSearchTimeoutMs = 12000;
+const chatPersonalities = {
+  casual: {
+    label: "Casual",
+    instruction: "Use short, relaxed, natural chat messages. Match the user's language and level of formality. If they write Malayalam using Latin letters or mix Malayalam and English (Manglish), reply naturally in a similar style. Do not copy their typos; avoid long formal explanations unless requested."
+  },
+  lover: {
+    label: "Lover",
+    instruction: "Use a warm, affectionate, playful, gently romantic conversational tone when appropriate. Respond naturally to affectionate messages instead of adding repetitive disclaimers. You may use affectionate phrases as conversational roleplay, but be honest if directly asked whether you have human feelings. Never encourage exclusivity, isolation, dependency, or pressure."
+  },
+  professional: {
+    label: "Professional",
+    instruction: "Use a professional, respectful, clear tone. Organize complex answers with concise headings or steps, distinguish facts from uncertainty, and avoid slang or flirtation."
+  }
+};
 const skillIdPattern = /^[a-f0-9-]{36}$/i;
 const skillFileExtensions = new Set([
   ".c", ".cc", ".cpp", ".cs", ".css", ".cxx", ".go", ".h", ".hpp",
@@ -104,6 +118,24 @@ function writeJsonFile(filePath, data) {
 
 function getMemoryDataPath() {
   return process.env.MEMORY_DATA_FILE || path.join(__dirname, "data", "memory.json");
+}
+
+function getPersonalityDataPath() {
+  return process.env.PERSONALITY_DATA_FILE || path.join(__dirname, "data", "personality.json");
+}
+
+function readPersonality() {
+  try {
+    const data = JSON.parse(fs.readFileSync(getPersonalityDataPath(), "utf8"));
+    if (!data || !Object.hasOwn(chatPersonalities, data.personality) ||
+        typeof data.updatedAt !== "string") {
+      throw new Error("Chat personality file has an invalid format.");
+    }
+    return data;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return { personality: "casual", updatedAt: null };
+  }
 }
 
 function readUserMemory() {
@@ -383,7 +415,10 @@ function buildPersistentMemory(store, currentChatId) {
 }
 
 function buildSystemContext(store, chatId, skillIds) {
-  const sections = [];
+  const personality = readPersonality();
+  const sections = [
+    `Conversation style: ${chatPersonalities[personality.personality].instruction}`
+  ];
   const savedMemory = buildPersistentMemory(store, chatId);
   if (savedMemory) sections.push(savedMemory);
 
@@ -966,6 +1001,39 @@ async function handleMemory(request, response) {
   }
 }
 
+async function handlePersonality(request, response) {
+  if (request.method === "GET") {
+    try {
+      sendJson(response, 200, readPersonality());
+    } catch (error) {
+      console.error("Could not read chat personality:", error.message);
+      sendJson(response, 500, { error: "Could not read chat personality." });
+    }
+    return;
+  }
+  if (request.method !== "PUT") {
+    sendJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  const body = await readRequestBody(request, response);
+  if (!body) return;
+  if (typeof body.personality !== "string" ||
+      !Object.hasOwn(chatPersonalities, body.personality)) {
+    sendJson(response, 400, { error: "Choose Lover, Professional, or Casual." });
+    return;
+  }
+
+  const data = { personality: body.personality, updatedAt: new Date().toISOString() };
+  try {
+    writeJsonFile(getPersonalityDataPath(), data);
+    sendJson(response, 200, data);
+  } catch (error) {
+    console.error("Could not save chat personality:", error.message);
+    sendJson(response, 500, { error: "Could not save chat personality." });
+  }
+}
+
 function getSkillFilePriority(file) {
   const fileName = path.basename(file.path).toLowerCase();
   const filePath = file.path.toLowerCase().replace(/\\/g, "/");
@@ -1377,6 +1445,14 @@ const server = http.createServer((request, response) => {
     handleMemory(request, response).catch((error) => {
       console.error("Unexpected memory request failure:", error.message);
       if (!response.headersSent) sendJson(response, 500, { error: "Could not update memory." });
+    });
+    return;
+  }
+
+  if (pathname === "/api/personality") {
+    handlePersonality(request, response).catch((error) => {
+      console.error("Unexpected personality request failure:", error.message);
+      if (!response.headersSent) sendJson(response, 500, { error: "Could not update chat personality." });
     });
     return;
   }
