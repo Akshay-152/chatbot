@@ -1,0 +1,44 @@
+{
+  "id": "1ec6c256-8317-44fc-8b69-b593ffb5184b",
+  "name": "master-prompt-template.md",
+  "summary": "Master Prompt Template",
+  "instructions": "Use this template to create a master prompt for a task or project. It includes a structured format for defining the objective, requirements, context, inputs, constraints, and other important details. Adapt it to your needs and use it as a starting point for your prompts.",
+  "sourcePath": "C:\\programing\\master-prompt-builder-skill\\master-prompt-builder-skill",
+  "files": [
+    {
+      "path": "examples/software-project-example.md",
+      "sizeBytes": 2153
+    },
+    {
+      "path": "README.md",
+      "sizeBytes": 1534
+    },
+    {
+      "path": "references/prompt-structure.md",
+      "sizeBytes": 1717
+    },
+    {
+      "path": "references/quality-checklist.md",
+      "sizeBytes": 1283
+    },
+    {
+      "path": "SKILL.md",
+      "sizeBytes": 8331
+    },
+    {
+      "path": "templates/master-prompt-template.md",
+      "sizeBytes": 2330
+    },
+    {
+      "path": "templates/step-by-step-template.md",
+      "sizeBytes": 1530
+    },
+    {
+      "path": "templates/todo-template.md",
+      "sizeBytes": 739
+    }
+  ],
+  "scanNotes": [],
+  "createdAt": "2026-11-13T10:18:58.190Z",
+  "updatedAt": "2026-11-13T10:18:58.190Z"
+}

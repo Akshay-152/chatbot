@@ -21,6 +21,16 @@ const attachmentName = document.querySelector("#attachment-name");
 const removeAttachmentButton = document.querySelector("#remove-attachment");
 const imageModelHint = document.querySelector("#image-model-hint");
 const voiceButton = document.querySelector("#voice-button");
+const voiceModeElement = document.querySelector("#voice-mode");
+const voiceOrb = document.querySelector("#voice-orb");
+const voiceCaption = document.querySelector("#voice-caption");
+const voiceTypeForm = document.querySelector("#voice-type-form");
+const voiceTypeInput = document.querySelector("#voice-type-input");
+const voiceTypeButton = document.querySelector("#voice-type-button");
+const voiceMuteButton = document.querySelector("#voice-mute-button");
+const voiceCloseButton = document.querySelector("#voice-close-button");
+const voiceSelect = document.querySelector("#voice-select");
+const voiceSettingsStatus = document.querySelector("#voice-settings-status");
 const webSearchToggle = document.querySelector("#web-search-toggle");
 const newChatButton = document.querySelector("#new-chat-button");
 const chatHistoryButton = document.querySelector("#chat-history-button");
@@ -49,6 +59,13 @@ const skillFolderPathInput = document.querySelector("#skill-folder-path");
 const previewSkillFolderButton = document.querySelector("#preview-skill-folder");
 const skillFolderPreview = document.querySelector("#skill-folder-preview");
 const settingsStatus = document.querySelector("#settings-status");
+const settingsSearchInput = document.querySelector("#settings-search");
+const settingsNav = document.querySelector("#settings-nav");
+const settingsContent = document.querySelector(".settings-content");
+const settingsGroupTitle = document.querySelector("#settings-group-title");
+const settingsEmpty = document.querySelector("#settings-empty");
+const settingsSections = Array.from(document.querySelectorAll(".settings-section"));
+let activeSettingsGroup = "all";
 const useSkillButton = document.querySelector("#use-skill-button");
 const skillSelectionCount = document.querySelector("#skill-selection-count");
 const skillPopover = document.querySelector("#skill-popover");
@@ -76,8 +93,6 @@ let editingMessageIndex = null;
 let draftBeforeEdit = null;
 let isLoading = false;
 let modelsAvailable = false;
-let recognition = null;
-let isListening = false;
 let activeSpeechButton = null;
 let webSearchEnabled = true;
 let settingsReturnFocus = null;
@@ -196,13 +211,47 @@ function splitSpeechText(text, maxLength = 180) {
   return chunks;
 }
 
+const voicePreferenceKey = "chatbot-voice-name";
+
+function readVoicePreference() {
+  try {
+    return window.localStorage.getItem(voicePreferenceKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeVoicePreference(name) {
+  try {
+    if (name) window.localStorage.setItem(voicePreferenceKey, name);
+    else window.localStorage.removeItem(voicePreferenceKey);
+  } catch {
+    /* Ignore storage failures; the system voice stays in use. */
+  }
+}
+
+function getPreferredSpeechVoice() {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  const saved = readVoicePreference();
+  return voices.find((candidate) => candidate.name === saved)
+    || voices.find((candidate) => candidate.default && /^en/i.test(candidate.lang))
+    || voices.find((candidate) => candidate.default)
+    || voices.find((candidate) => /^en[-_]/i.test(candidate.lang))
+    || voices[0]
+    || null;
+}
+
 function getSpeechVoice(text) {
   const requestedLanguage = /[\u0D00-\u0D7F]/.test(text)
     ? "ml-IN"
     : navigator.language || "en-US";
   const voices = window.speechSynthesis.getVoices();
   const languagePrefix = requestedLanguage.split("-")[0].toLowerCase();
-  const voice = voices.find((candidate) =>
+  const preferred = getPreferredSpeechVoice();
+  const preferredMatches = preferred &&
+    preferred.lang.toLowerCase().split("-")[0] === languagePrefix ? preferred : null;
+  const voice = preferredMatches || voices.find((candidate) =>
     candidate.lang.toLowerCase() === requestedLanguage.toLowerCase()
   ) || voices.find((candidate) =>
     candidate.lang.toLowerCase() === languagePrefix ||
@@ -1169,6 +1218,98 @@ async function deleteSkill(skillId) {
   }
 }
 
+function settingsGroupLabel(group) {
+  const button = settingsNav.querySelector(`.settings-nav-group[data-group="${group}"]`);
+  return button ? button.textContent.trim().replace(/\s+/g, " ") : "Settings";
+}
+
+function applySettingsFilter() {
+  const query = settingsSearchInput.value.trim().toLowerCase();
+  settingsSections.forEach((section) => {
+    const inGroup = activeSettingsGroup === "all" || section.dataset.group === activeSettingsGroup;
+    const matchesQuery = !query || section.textContent.toLowerCase().includes(query);
+    section.hidden = !(inGroup && matchesQuery);
+  });
+
+  if (query) {
+    const matches = settingsSections.filter((section) => !section.hidden).length;
+    settingsGroupTitle.textContent = "Search results";
+    settingsEmpty.textContent = `No settings match “${settingsSearchInput.value.trim()}”.`;
+    settingsEmpty.hidden = matches > 0;
+  } else {
+    settingsGroupTitle.textContent = settingsGroupLabel(activeSettingsGroup);
+    settingsEmpty.hidden = true;
+  }
+}
+
+function selectSettingsGroup(group) {
+  activeSettingsGroup = group;
+  settingsSearchInput.value = "";
+  settingsNav.querySelectorAll(".settings-nav-group").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.group === group);
+  });
+  applySettingsFilter();
+  settingsContent.scrollTop = 0;
+}
+
+function populateVoiceOptions() {
+  if (!voiceSelect) return;
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    voiceSelect.disabled = true;
+    if (voiceSettingsStatus) {
+      voiceSettingsStatus.textContent = "This browser cannot speak replies aloud. Voice input still works.";
+    }
+    return;
+  }
+
+  const voices = window.speechSynthesis.getVoices()
+    .slice()
+    .sort((left, right) =>
+      Number(right.localService) - Number(left.localService) || left.name.localeCompare(right.name));
+  const saved = readVoicePreference();
+  voiceSelect.replaceChildren();
+  const automatic = document.createElement("option");
+  automatic.value = "";
+  automatic.textContent = "System default";
+  voiceSelect.append(automatic);
+  voices.forEach((voice) => {
+    const option = document.createElement("option");
+    option.value = voice.name;
+    option.textContent = `${voice.name} — ${voice.lang}${voice.localService ? "" : " (network)"}`;
+    voiceSelect.append(option);
+  });
+  voiceSelect.value = voices.some((voice) => voice.name === saved) ? saved : "";
+  voiceSelect.disabled = voices.length === 0;
+  if (voiceSettingsStatus) {
+    voiceSettingsStatus.textContent = voices.length
+      ? `${voices.length} voice${voices.length === 1 ? "" : "s"} available on this device.`
+      : "No system voices are available yet. Install one in your system's speech settings.";
+  }
+}
+
+function previewSelectedVoice() {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const voice = getPreferredSpeechVoice();
+  const utterance = new window.SpeechSynthesisUtterance("This is how my spoken replies will sound.");
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang = voice.lang;
+  }
+  window.speechSynthesis.speak(utterance);
+}
+
+function resetSettingsView() {
+  settingsSearchInput.value = "";
+  settingsNav.querySelectorAll(".settings-nav-group-wrap").forEach((wrap) => {
+    const groupButton = wrap.querySelector(".settings-nav-group");
+    const children = wrap.querySelector(".settings-nav-children");
+    if (groupButton) groupButton.setAttribute("aria-expanded", "false");
+    if (children) children.hidden = true;
+  });
+  selectSettingsGroup("all");
+}
+
 function openSettings() {
   const returnFocus = mobileViewport.matches && sidebar.classList.contains("is-open")
     ? mobileMenuButton
@@ -1178,6 +1319,8 @@ function openSettings() {
   settingsDialog.hidden = false;
   skillPopover.hidden = true;
   setSettingsStatus("");
+  resetSettingsView();
+  populateVoiceOptions();
   loadSettings();
   closeSettingsButton.focus();
 }
@@ -1365,7 +1508,7 @@ function setLoading(loading) {
   promptInput.disabled = loading;
   uploadButton.disabled = loading;
   removeAttachmentButton.disabled = loading;
-  voiceButton.disabled = loading || !SpeechRecognition;
+  voiceButton.disabled = loading;
   webSearchToggle.disabled = loading;
   modelSelect.disabled = loading || !modelsAvailable;
   newChatButton.disabled = loading;
@@ -1563,7 +1706,48 @@ settingsDialog.addEventListener("keydown", (event) => {
 settingsDialog.addEventListener("click", (event) => {
   if (event.target === settingsDialog) closeSettings();
 });
+settingsSearchInput.addEventListener("input", () => {
+  const hasQuery = Boolean(settingsSearchInput.value.trim());
+  if (hasQuery) activeSettingsGroup = "all";
+  settingsNav.querySelectorAll(".settings-nav-group").forEach((button) => {
+    button.classList.toggle("is-active", !hasQuery && button.dataset.group === activeSettingsGroup);
+  });
+  applySettingsFilter();
+  settingsContent.scrollTop = 0;
+});
+settingsNav.addEventListener("click", (event) => {
+  const groupButton = event.target.closest(".settings-nav-group");
+  if (groupButton) {
+    if (groupButton.hasAttribute("aria-expanded")) {
+      const isExpanded = groupButton.getAttribute("aria-expanded") === "true";
+      groupButton.setAttribute("aria-expanded", String(!isExpanded));
+      const children = groupButton.parentElement.querySelector(".settings-nav-children");
+      if (children) children.hidden = isExpanded;
+    }
+    selectSettingsGroup(groupButton.dataset.group);
+    return;
+  }
+
+  const childButton = event.target.closest(".settings-nav-child");
+  if (!childButton) return;
+  const target = document.getElementById(childButton.dataset.target);
+  if (!target) return;
+  const section = target.closest(".settings-section");
+  if (section && section.dataset.group) selectSettingsGroup(section.dataset.group);
+  const offset = target.getBoundingClientRect().top - settingsContent.getBoundingClientRect().top + settingsContent.scrollTop;
+  settingsContent.scrollTop = Math.max(0, offset - 48);
+});
 saveMemoryButton.addEventListener("click", saveMemory);
+if (voiceSelect) {
+  voiceSelect.addEventListener("change", () => {
+    writeVoicePreference(voiceSelect.value);
+    previewSelectedVoice();
+  });
+}
+if ("speechSynthesis" in window) {
+  window.speechSynthesis.addEventListener("voiceschanged", populateVoiceOptions);
+}
+populateVoiceOptions();
 savePersonalityButton.addEventListener("click", savePersonality);
 skillForm.addEventListener("submit", createSkill);
 previewSkillFolderButton.addEventListener("click", previewSkillFolder);
@@ -1656,74 +1840,462 @@ webSearchToggle.addEventListener("click", () => {
     : "Web and Wikipedia research disabled.");
 });
 
+
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SpeechRecognition) {
-  recognition = new SpeechRecognition();
-  recognition.lang = navigator.language || "en-US";
-  recognition.continuous = false;
-  recognition.interimResults = false;
 
-  recognition.addEventListener("result", (event) => {
-    const transcript = Array.from(event.results)
-      .slice(event.resultIndex)
-      .filter((result) => result.isFinal)
-      .map((result) => result[0].transcript.trim())
-      .filter(Boolean)
-      .join(" ");
+const voiceSession = {
+  active: false,
+  state: "idle",
+  muted: false,
+  listening: false,
+  stream: null,
+  recorder: null,
+  recorderMime: "",
+  chunks: [],
+  recognition: null,
+  browserTranscript: "",
+  speechToken: 0,
+  autoStopTimer: 0,
+  finalizeTimer: 0
+};
 
-    if (transcript) {
-      const start = promptInput.selectionStart;
-      const end = promptInput.selectionEnd;
-      const before = promptInput.value.slice(0, start);
-      const after = promptInput.value.slice(end);
-      const separator = before && !/\s$/.test(before) ? " " : "";
-      const inserted = `${separator}${transcript} `;
-      promptInput.value = `${before}${inserted}${after}`.slice(0, 4000);
-      const cursor = Math.min(before.length + inserted.length, promptInput.value.length);
-      promptInput.setSelectionRange(cursor, cursor);
-      promptInput.dispatchEvent(new Event("input"));
-    }
+function setVoiceState(state, caption) {
+  voiceSession.state = state;
+  voiceModeElement.dataset.state = state;
+  voiceCaption.textContent = caption;
+  voiceOrb.setAttribute(
+    "aria-label",
+    state === "listening" ? "Stop listening" : state === "speaking" ? "Interrupt the spoken reply" : "Start listening"
+  );
+}
+
+function updateVoiceMuteButton() {
+  voiceMuteButton.setAttribute("aria-pressed", String(voiceSession.muted));
+  voiceMuteButton.setAttribute("aria-label", voiceSession.muted ? "Unmute spoken replies" : "Mute spoken replies");
+  voiceMuteButton.title = voiceSession.muted ? "Unmute spoken replies" : "Mute spoken replies";
+  voiceModeElement.classList.toggle("is-muted", voiceSession.muted);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(new Error("Could not read the recording."));
+    reader.readAsDataURL(blob);
   });
+}
 
-  recognition.addEventListener("error", (event) => {
-    const messages = {
-      "not-allowed": "Allow microphone access in your browser to use voice typing.",
-      "no-speech": "No speech was detected. Try again.",
-      "audio-capture": "No microphone was found."
-    };
-    showError(messages[event.error] || "Voice typing failed. Please try again.");
-  });
+function cancelVoiceSpeech() {
+  voiceSession.speechToken += 1;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
 
-  recognition.addEventListener("end", () => {
-    isListening = false;
-    voiceButton.classList.remove("is-listening");
-    voiceButton.setAttribute("aria-label", "Start voice typing");
-    voiceButton.title = "Start voice typing";
-    voiceButton.disabled = isLoading;
-  });
+function stopVoiceStream() {
+  if (voiceSession.stream) {
+    voiceSession.stream.getTracks().forEach((track) => track.stop());
+    voiceSession.stream = null;
+  }
+}
 
-  voiceButton.addEventListener("click", () => {
-    errorMessage.hidden = true;
-    if (isListening) {
-      recognition.stop();
+function stopVoiceRecorder() {
+  return new Promise((resolve) => {
+    const recorder = voiceSession.recorder;
+    voiceSession.recorder = null;
+    if (!recorder || recorder.state === "inactive") {
+      resolve(null);
       return;
     }
-
+    recorder.addEventListener("stop", () => {
+      resolve(voiceSession.chunks.length
+        ? new Blob(voiceSession.chunks, { type: voiceSession.recorderMime || "audio/webm" })
+        : null);
+    }, { once: true });
     try {
-      recognition.start();
-      isListening = true;
-      voiceButton.classList.add("is-listening");
-      voiceButton.setAttribute("aria-label", "Stop voice typing");
-      voiceButton.title = "Listening…";
-    } catch (error) {
-      isListening = false;
-      showError("Voice typing could not start. Check microphone permission and try again.");
+      recorder.stop();
+    } catch {
+      resolve(null);
     }
   });
-} else {
-  voiceButton.disabled = true;
-  voiceButton.title = "Voice typing is not supported in this browser";
 }
+
+function startVoiceRecognition() {
+  if (!SpeechRecognition) return;
+  try {
+    const recognition = new SpeechRecognition();
+    voiceSession.recognition = recognition;
+    recognition.lang = navigator.language || "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.addEventListener("result", (event) => {
+      if (!voiceSession.active || !voiceSession.listening) return;
+      const text = Array.from(event.results)
+        .map((result) => result[0].transcript)
+        .join(" ")
+        .trim();
+      voiceSession.browserTranscript = text;
+      if (document.activeElement !== voiceTypeInput) voiceTypeInput.value = text;
+      const lastResult = event.results[event.results.length - 1];
+      if (lastResult && lastResult.isFinal) {
+        clearTimeout(voiceSession.finalizeTimer);
+        voiceSession.finalizeTimer = window.setTimeout(() => finishVoiceListening(), 900);
+      }
+    });
+    recognition.addEventListener("error", () => {
+      /* Server transcription is the fallback, so recognition errors are ignored. */
+    });
+    recognition.addEventListener("end", () => {
+      if (voiceSession.recognition === recognition) voiceSession.recognition = null;
+    });
+    recognition.start();
+  } catch {
+    voiceSession.recognition = null;
+  }
+}
+
+async function startVoiceListening() {
+  if (!voiceSession.active || voiceSession.listening) return;
+  if (voiceSession.state === "thinking" || voiceSession.state === "speaking") return;
+
+  cancelVoiceSpeech();
+  voiceSession.browserTranscript = "";
+  voiceSession.chunks = [];
+  if (document.activeElement === voiceTypeInput) voiceTypeInput.blur();
+  voiceTypeInput.value = "";
+  voiceTypeInput.placeholder = "Listening…";
+  setVoiceState("listening", "Listening… tap the orb when you're done");
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Microphone capture is not supported in this browser.");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!voiceSession.active) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    voiceSession.stream = stream;
+
+    if ("MediaRecorder" in window) {
+      const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+      const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+      try {
+        voiceSession.recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      } catch {
+        voiceSession.recorder = new MediaRecorder(stream);
+      }
+      voiceSession.recorderMime = voiceSession.recorder.mimeType || mimeType || "audio/webm";
+      voiceSession.recorder.addEventListener("dataavailable", (event) => {
+        if (event.data && event.data.size) voiceSession.chunks.push(event.data);
+      });
+      voiceSession.recorder.start(250);
+    }
+
+    startVoiceRecognition();
+    voiceSession.listening = true;
+    voiceButton.classList.add("is-listening");
+    voiceSession.autoStopTimer = window.setTimeout(() => finishVoiceListening(), 30000);
+  } catch {
+    voiceSession.listening = false;
+    stopVoiceStream();
+    setVoiceState("error", "Microphone access is blocked. Allow it in your browser, or type below.");
+  }
+}
+
+function cancelVoiceCapture() {
+  if (!voiceSession.listening) return;
+  voiceSession.listening = false;
+  voiceTypeInput.placeholder = "Type";
+  clearTimeout(voiceSession.autoStopTimer);
+  clearTimeout(voiceSession.finalizeTimer);
+  voiceButton.classList.remove("is-listening");
+  if (voiceSession.recognition) {
+    try {
+      voiceSession.recognition.abort();
+    } catch {
+      /* The recognition instance may already be stopped. */
+    }
+    voiceSession.recognition = null;
+  }
+  const recorder = voiceSession.recorder;
+  voiceSession.recorder = null;
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+    } catch {
+      /* Ignore a recorder that already stopped. */
+    }
+  }
+  voiceSession.chunks = [];
+  stopVoiceStream();
+}
+
+async function finishVoiceListening() {
+  if (!voiceSession.listening) return;
+  voiceSession.listening = false;
+  clearTimeout(voiceSession.autoStopTimer);
+  clearTimeout(voiceSession.finalizeTimer);
+  voiceButton.classList.remove("is-listening");
+
+  if (voiceSession.recognition) {
+    try {
+      voiceSession.recognition.stop();
+    } catch {
+      /* Ignore a recognition instance that already ended. */
+    }
+    voiceSession.recognition = null;
+  }
+
+  const blob = await stopVoiceRecorder();
+  stopVoiceStream();
+  if (!voiceSession.active) return;
+
+  const typed = voiceTypeInput.value.trim();
+  const browserTranscript = (voiceSession.browserTranscript || typed).trim();
+  voiceTypeInput.placeholder = "Type";
+  setVoiceState("thinking", "Thinking…");
+
+  let serverTranscript = "";
+  if (blob && blob.size > 800) {
+    try {
+      serverTranscript = await transcribeRecordedAudio(blob);
+    } catch (error) {
+      setActionStatus(error.message || "Server transcription failed.");
+    }
+  }
+  if (!voiceSession.active) return;
+
+  const text = (serverTranscript || browserTranscript).trim();
+  if (!text) {
+    setVoiceState("error", "I didn't catch that. Tap the orb to try again, or type below.");
+    return;
+  }
+
+  voiceTypeInput.value = text;
+  await sendVoiceTurn(text);
+}
+
+async function transcribeRecordedAudio(blob) {
+  const audio = await blobToBase64(blob);
+  const response = await fetch("/api/voice/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      audio,
+      mimeType: blob.type || "audio/webm",
+      language: (navigator.language || "").slice(0, 5)
+    })
+  });
+  if (response.status === 503) return "";
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "Server transcription failed.");
+  return typeof result.text === "string" ? result.text.trim() : "";
+}
+
+async function sendVoiceTurn(text) {
+  if (!voiceSession.active) return;
+  let selectedModel;
+  try {
+    selectedModel = chooseModelForRequest({
+      requiresVision: false,
+      requiresReasoning: activeSkillIds.length > 0 || promptNeedsReasoning(text)
+    });
+  } catch (error) {
+    setVoiceState("error", error.message);
+    return;
+  }
+
+  cancelVoiceSpeech();
+  errorMessage.hidden = true;
+  setVoiceState("thinking", "Thinking…");
+  const userMessage = { role: "user", content: text };
+  conversation.push(userMessage);
+  addMessage(userMessage, conversation.length - 1);
+  const streamingMessage = { role: "assistant", content: "", model: selectedModel, isStreaming: true };
+  const assistantBubble = addMessage(streamingMessage, conversation.length);
+  const liveOutput = assistantBubble.querySelector(".structured-output-content");
+  liveOutput.textContent = "…";
+  messagesElement.scrollTop = messagesElement.scrollHeight;
+  updateToolbarState();
+  renderOutline();
+  setLoading(true);
+
+  try {
+    const recentMessages = conversation.slice(-maxServerMessages);
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chatId: currentChatId,
+        model: selectedModel,
+        voice: true,
+        webSearch: false,
+        skillIds: activeSkillIds,
+        messages: recentMessages.map((message) => ({ role: message.role, content: message.content }))
+      })
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error || "Voice reply failed. Please try again.");
+    }
+    const streamResult = await readChatEventStream(response, () => {}, () => {});
+    const reply = streamResult.reply;
+    const assistantMessage = {
+      role: "assistant",
+      content: reply,
+      model: streamResult.model || selectedModel,
+      isArriving: true
+    };
+    conversation.push(assistantMessage);
+    assistantBubble.classList.remove("is-streaming");
+    assistantBubble.classList.add("is-arriving");
+    liveOutput.replaceWith(renderStructuredOutput(reply));
+    appendMessageActions(assistantMessage, conversation.length - 1, assistantBubble.querySelector(".message-column"));
+    messagesElement.scrollTop = messagesElement.scrollHeight;
+    updateToolbarState();
+    renderOutline();
+    loadChatHistory();
+    setLoading(false);
+    setActionStatus("Voice reply received.");
+    speakVoiceReply(reply);
+  } catch (error) {
+    assistantBubble.remove();
+    setLoading(false);
+    const message = error.message || "Could not reach the server.";
+    showError(message);
+    setVoiceState("error", `${message} Tap the orb to try again.`);
+  }
+}
+
+function speakVoiceReply(text) {
+  if (!voiceSession.active) return;
+  if (voiceSession.muted || !("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    setVoiceState("idle", "Tap the orb to talk again");
+    return;
+  }
+
+  const spoken = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1")
+    .replace(/[*_`#>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!spoken) {
+    setVoiceState("idle", "Tap the orb to talk again");
+    return;
+  }
+
+  const chunks = splitSpeechText(spoken, 180);
+  const voice = getPreferredSpeechVoice();
+  const token = ++voiceSession.speechToken;
+  let index = 0;
+  setVoiceState("speaking", "Speaking… tap the orb to interrupt");
+
+  const speakNext = () => {
+    if (!voiceSession.active || token !== voiceSession.speechToken) return;
+    if (index >= chunks.length) {
+      setVoiceState("idle", "Tap the orb to talk again");
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(chunks[index]);
+    index += 1;
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    }
+    utterance.rate = 1.02;
+    utterance.onend = () => window.setTimeout(speakNext, 60);
+    utterance.onerror = (event) => {
+      if (event.error === "canceled" || event.error === "interrupted") return;
+      setVoiceState("idle", "The reply is in the chat. Tap the orb to talk again");
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+  speakNext();
+}
+
+async function openVoiceMode() {
+  if (voiceSession.active || !voiceModeElement) return;
+  errorMessage.hidden = true;
+  voiceSession.active = true;
+  voiceSession.muted = false;
+  updateVoiceMuteButton();
+  voiceModeElement.hidden = false;
+  document.body.classList.add("voice-mode-open");
+  voiceTypeInput.value = "";
+  voiceTypeInput.placeholder = "Type";
+  setVoiceState("idle", "Tap the orb and start talking");
+  voiceCloseButton.focus();
+  await startVoiceListening();
+}
+
+function closeVoiceMode() {
+  if (!voiceSession.active) return;
+  voiceSession.active = false;
+  voiceSession.listening = false;
+  clearTimeout(voiceSession.autoStopTimer);
+  clearTimeout(voiceSession.finalizeTimer);
+  cancelVoiceSpeech();
+  if (voiceSession.recognition) {
+    try {
+      voiceSession.recognition.abort();
+    } catch {
+      /* Ignore a recognition instance that already ended. */
+    }
+    voiceSession.recognition = null;
+  }
+  const recorder = voiceSession.recorder;
+  voiceSession.recorder = null;
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+    } catch {
+      /* Ignore a recorder that already stopped. */
+    }
+  }
+  voiceSession.chunks = [];
+  stopVoiceStream();
+  voiceButton.classList.remove("is-listening");
+  voiceModeElement.hidden = true;
+  document.body.classList.remove("voice-mode-open");
+  voiceButton.focus();
+}
+
+voiceButton.addEventListener("click", openVoiceMode);
+voiceCloseButton.addEventListener("click", closeVoiceMode);
+voiceOrb.addEventListener("click", () => {
+  if (voiceSession.state === "listening") {
+    finishVoiceListening();
+  } else if (voiceSession.state === "speaking") {
+    cancelVoiceSpeech();
+    setVoiceState("idle", "Tap the orb to talk again");
+  } else if (voiceSession.state === "idle" || voiceSession.state === "error") {
+    startVoiceListening();
+  }
+});
+voiceMuteButton.addEventListener("click", () => {
+  voiceSession.muted = !voiceSession.muted;
+  updateVoiceMuteButton();
+  if (voiceSession.muted) {
+    cancelVoiceSpeech();
+    if (voiceSession.state === "speaking") setVoiceState("idle", "Spoken replies are muted. Tap the orb to talk again");
+  }
+});
+voiceTypeButton.addEventListener("click", () => voiceTypeInput.focus());
+voiceTypeInput.addEventListener("focus", cancelVoiceCapture);
+voiceTypeForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = voiceTypeInput.value.trim();
+  if (!text || voiceSession.state === "thinking" || voiceSession.state === "speaking") return;
+  cancelVoiceCapture();
+  voiceTypeInput.value = text;
+  sendVoiceTurn(text);
+});
+voiceModeElement.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeVoiceMode();
+  }
+});
 
 async function readChatEventStream(response, onToken, onModel) {
   const reader = response.body.getReader();

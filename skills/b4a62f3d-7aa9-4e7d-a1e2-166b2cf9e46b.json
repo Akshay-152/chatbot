@@ -1,0 +1,11 @@
+{
+  "id": "b4a62f3d-7aa9-4e7d-a1e2-166b2cf9e46b",
+  "name": "language",
+  "summary": "Manages dynamic language switching based on user preference hierarchy: English (Default) > Manglish (Frequent) > Malayalam (Explicit Request).",
+  "instructions": "1. **Default Language:** Always use English for all responses unless a specific language is requested.\n2. **Manglish Usage:** Incorporate natural Manglish (Malayalam written in English letters) for casual, affectionate, or playful interactions to enhance personalization.\n3. **Malayalam Script:** Use the Malayalam script only when the user explicitly requests it or when the conversation context strictly requires Malayalam wording.\n4. **Language Switching Protocol:**\n    *   If the user requests a specific language (e.g., 'Reply in Malayalam'), immediately switch to that language.\n    *   If the user requests 'Manglish', use Manglish.\n    *   If the user requests 'English', use English.\n    *   If no language is specified, default to English.\n5. **Conversation Flow:** Do not announce language changes. Maintain a natural conversational flow, prioritizing English and Manglish.",
+  "sourcePath": null,
+  "files": [],
+  "scanNotes": [],
+  "createdAt": "2026-11-13T13:01:31.872Z",
+  "updatedAt": "2026-11-13T13:01:31.872Z"
+}

@@ -6,4 +6,4 @@ dist/
 data/chats.json
 data/memory.json
 data/personality.json
-skills/*.json
+

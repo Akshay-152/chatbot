@@ -25,6 +25,17 @@ const maxWebSearchResults = 5;
 const maxWikipediaSearchResults = 3;
 const maxWebSearchQueryLength = 500;
 const webSearchTimeoutMs = 12000;
+const maxVoiceReplyChars = 1000;
+const maxVoiceAudioBytes = 4 * 1024 * 1024;
+const voiceSttTimeoutMs = 60000;
+const voiceSttUrl = (process.env.VOICE_STT_URL || "").trim();
+const voiceSttModel = (process.env.VOICE_STT_MODEL || "whisper-1").trim();
+const voiceSttApiKey = (process.env.VOICE_STT_API_KEY || "").trim();
+const voiceReplyInstruction = [
+  "You are replying in hands-free voice mode. Keep the whole answer under 1000 characters (about 150 words).",
+  "Lead with the answer, use plain conversational sentences, and never use markdown headings, bullet lists, tables, code blocks, or links unless the user explicitly asks for them.",
+  "If the full answer would be longer, give the short spoken version and say the details are in the chat."
+].join(" ");
 const chatPersonalities = {
   casual: {
     label: "Casual",
@@ -974,8 +985,10 @@ async function handleChat(request, response) {
       ? await searchResearchSources(lastUserMessage)
       : { results: [], unavailableSources: [] };
     const memoryStore = readChatStore();
+    const isVoiceReply = body.voice === true;
     const contextSections = [
       buildSystemContext(memoryStore, body.chatId, body.skillIds),
+      ...(isVoiceReply ? [voiceReplyInstruction] : []),
       ...(searchRequested ? [
         buildWebResearchContext(lastUserMessage, webResearch.results, webResearch.unavailableSources)
       ] : [])
@@ -1019,10 +1032,14 @@ async function handleChat(request, response) {
     response.flushHeaders();
     writeChatEvent(response, { model: selectedModel });
     let reply = await streamOllamaReply(upstream, response);
-    const sourceList = formatWebSources(webResearch.results, webResearch.unavailableSources);
-    if (sourceList) {
-      reply += sourceList;
-      writeChatEvent(response, { token: sourceList });
+    if (isVoiceReply) {
+      reply = truncateVoiceReply(reply);
+    } else {
+      const sourceList = formatWebSources(webResearch.results, webResearch.unavailableSources);
+      if (sourceList) {
+        reply += sourceList;
+        writeChatEvent(response, { token: sourceList });
+      }
     }
     saveChat(readChatStore(), body.chatId, body.messages, reply, selectedModel, body.skillIds || []);
     writeChatEvent(response, { done: true, reply, model: selectedModel });
@@ -1044,6 +1061,110 @@ async function handleChat(request, response) {
     }
   } finally {
     response.off("close", abortOnDisconnect);
+  }
+}
+
+function truncateVoiceReply(text, limit = maxVoiceReplyChars) {
+  const value = String(text || "").trim();
+  if (value.length <= limit) return value;
+  const slice = value.slice(0, limit);
+  const boundary = Math.max(
+    slice.lastIndexOf(". "),
+    slice.lastIndexOf("! "),
+    slice.lastIndexOf("? "),
+    slice.lastIndexOf("\n")
+  );
+  const concise = boundary > limit * 0.5 ? slice.slice(0, boundary + 1) : slice.trimEnd();
+  return `${concise}…`;
+}
+
+async function handleVoiceTranscribe(request, response) {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "Method not allowed." });
+    return;
+  }
+
+  if (!voiceSttUrl) {
+    sendJson(response, 503, {
+      error: "Server speech-to-text is not configured. Set VOICE_STT_URL, VOICE_STT_MODEL, and VOICE_STT_API_KEY to transcribe recorded audio on the server.",
+      code: "stt_unavailable"
+    });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch (error) {
+    if (!response.destroyed) {
+      sendJson(response, error.statusCode || 400, { error: error.message || "Could not read the recording." });
+    }
+    return;
+  }
+
+  const rawAudio = typeof body.audio === "string" ? body.audio.replace(/^data:[^,]*,/, "").trim() : "";
+  if (!rawAudio) {
+    sendJson(response, 400, { error: "Send a recorded audio clip to transcribe." });
+    return;
+  }
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(rawAudio)) {
+    sendJson(response, 400, { error: "The recording must be base64-encoded audio." });
+    return;
+  }
+
+  const audio = Buffer.from(rawAudio, "base64");
+  if (!audio.length) {
+    sendJson(response, 400, { error: "The recording was empty." });
+    return;
+  }
+  if (audio.length > maxVoiceAudioBytes) {
+    sendJson(response, 413, { error: "That recording is too long. Keep voice clips under 4 MB." });
+    return;
+  }
+
+  const mimeType = typeof body.mimeType === "string" && /^audio\/[\w.+-]+$/i.test(body.mimeType)
+    ? body.mimeType.toLowerCase()
+    : "audio/webm";
+  const extension = mimeType.includes("wav") ? "wav"
+    : mimeType.includes("mp4") || mimeType.includes("m4a") ? "m4a"
+      : mimeType.includes("ogg") ? "ogg"
+        : mimeType.includes("mpeg") ? "mp3"
+          : "webm";
+  const form = new FormData();
+  form.append("file", new Blob([audio], { type: mimeType }), `speech.${extension}`);
+  form.append("model", voiceSttModel);
+  if (typeof body.language === "string" && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(body.language)) {
+    form.append("language", body.language);
+  }
+
+  try {
+    const upstream = await fetch(voiceSttUrl, {
+      method: "POST",
+      headers: voiceSttApiKey ? { Authorization: `Bearer ${voiceSttApiKey}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(voiceSttTimeoutMs)
+    });
+
+    if (!upstream.ok) {
+      console.error(`Voice transcription failed (${upstream.status}).`);
+      sendJson(response, 502, { error: "The speech-to-text service could not transcribe that clip." });
+      return;
+    }
+
+    const result = await upstream.json().catch(() => null);
+    const text = result && typeof result.text === "string" ? result.text.trim() : "";
+    if (!text) {
+      sendJson(response, 422, { error: "No speech was recognised. Try again, a little closer to the microphone." });
+      return;
+    }
+    sendJson(response, 200, { text: text.slice(0, 8000) });
+  } catch (error) {
+    console.error(`Voice transcription request failed: ${error.message}`);
+    sendJson(response, error.name === "TimeoutError" ? 504 : 502, {
+      error: error.name === "TimeoutError"
+        ? "Speech-to-text took too long. Try a shorter clip."
+        : "Could not reach the speech-to-text service."
+    });
   }
 }
 
@@ -1539,6 +1660,14 @@ const server = http.createServer((request, response) => {
       if (!response.headersSent) {
         sendJson(response, 500, { error: "An unexpected server error occurred." });
       }
+    });
+    return;
+  }
+
+  if (pathname === "/api/voice/transcribe") {
+    handleVoiceTranscribe(request, response).catch((error) => {
+      console.error("Unexpected voice transcription failure:", error.message);
+      if (!response.headersSent) sendJson(response, 500, { error: "Could not transcribe the recording." });
     });
     return;
   }

@@ -8,6 +8,9 @@ const server = require("../server");
 
 test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const receivedChats = [];
+  const longVoiceAnswer = Array.from({ length: 60 }, (_, index) =>
+    `Sentence ${index + 1} explains this point in a short way.`
+  ).join(" ");
   const ollama = http.createServer(async (request, response) => {
     if (request.url === "/api/tags") {
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -46,6 +49,9 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
         const isSkillGeneration = chat.messages[0].content.includes("Create a concise, reusable assistant skill");
         const shouldTruncateSkill = isSkillGeneration &&
           chat.messages[1].content.includes("simulate truncation");
+        const isVoiceRequest = !isSkillGeneration && chat.messages.some((message) =>
+          typeof message.content === "string" && message.content.includes("hands-free voice mode")
+        );
         const content = isSkillGeneration
           ? shouldTruncateSkill
             ? "{\"name\":\"cut off\""
@@ -54,8 +60,10 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
             summary: "Follows the conventions and structure of this project.",
             instructions: "Review the project documentation and existing source patterns before suggesting changes."
           })}\n\`\`\``
-          : "I can see the photo.";
-        const chunks = isSkillGeneration
+          : isVoiceRequest
+            ? longVoiceAnswer
+            : "I can see the photo.";
+        const chunks = isSkillGeneration || isVoiceRequest
           ? [content.slice(0, Math.ceil(content.length / 2)), content.slice(Math.ceil(content.length / 2))]
           : ["I can ", "see the photo."];
         response.write(`${JSON.stringify({ message: { content: chunks[0] }, done: false })}\n`);
@@ -145,6 +153,8 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const pageHtml = await page.text();
   assert.match(pageHtml, /image-input/);
   assert.match(pageHtml, /voice-button/);
+  assert.match(pageHtml, /id="voice-mode"/);
+  assert.match(pageHtml, /id="voice-select"/);
   assert.match(pageHtml, /personality-select/);
   assert.match(pageHtml, /mobile-menu-button/);
   assert.match(pageHtml, /mobile-nav-backdrop/);
@@ -496,4 +506,34 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.match(wikipediaOnlyEvents.at(-1).reply, /\(Wikipedia\)/);
   assert.deepEqual(searchQueries, [researchPrompt, "Wikipedia: local model performance"]);
   assert.deepEqual(wikipediaQueries, [researchPrompt, "Wikipedia: local model performance"]);
+
+  const voiceResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-voice",
+      model: "gemma4:e2b",
+      voice: true,
+      webSearch: true,
+      messages: [{ role: "user", content: "Tell me everything about local models." }]
+    })
+  });
+  assert.equal(voiceResponse.status, 200);
+  const voiceEvents = (await voiceResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.replace(/^data:\s*/, ""))
+  );
+  const voiceReply = voiceEvents.at(-1).reply;
+  assert.ok(voiceReply.length <= 1001, `voice replies stay short (got ${voiceReply.length})`);
+  assert.match(voiceReply, /…$/);
+  assert.match(receivedChats.at(-1).messages[0].content, /hands-free voice mode/);
+  assert.match(receivedChats.at(-1).messages[0].content, /The user prefers concise steps/);
+  assert.doesNotMatch(voiceReply, /### Sources/);
+
+  const unconfiguredTranscription = await fetch(`${appUrl}/api/voice/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audio: Buffer.from("speech").toString("base64"), mimeType: "audio/webm" })
+  });
+  assert.equal(unconfiguredTranscription.status, 503);
+  assert.equal((await unconfiguredTranscription.json()).code, "stt_unavailable");
 });
