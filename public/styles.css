@@ -746,7 +746,7 @@ button { color: inherit; }
   gap: 31px;
   overflow-y: auto;
   margin: 0 auto;
-  padding: 38px 35px 28px;
+  padding: 38px 35px 72px;
   scroll-behavior: smooth;
 }
 
@@ -987,12 +987,28 @@ button { color: inherit; }
   background: #303137e8;
   box-shadow: 0 4px 14px #00000050;
   cursor: pointer;
-  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 7px) scale(0.94);
+  visibility: hidden;
+  transition: opacity 160ms ease, transform 160ms ease, visibility 0s linear 160ms;
 }
 
 .scroll-to-bottom svg { width: 19px; height: 19px; }
 .scroll-to-bottom:hover { background: #3a3b42; }
 .scroll-to-bottom[hidden] { display: none; }
+.scroll-to-bottom.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0) scale(1);
+  visibility: visible;
+  transition: opacity 160ms ease, transform 160ms ease, visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-to-bottom,
+  .scroll-to-bottom.is-visible { transition: none; }
+}
 
 .composer:focus-within {
   border-color: #666873;
@@ -1184,10 +1200,10 @@ textarea::placeholder { color: #858690; }
 
 @media (max-width: 760px) {
   .sidebar { width: 220px; flex-basis: 220px; }
-  .topbar { padding: 0 16px; }
+  .topbar { padding: 0 42px 0 16px; }
   .topbar-tools > .icon-button { display: none; }
   .model-picker select { max-width: 145px; }
-  .messages { padding: 28px 20px 20px; }
+  .messages { padding: 28px 20px 72px; }
   .composer-area { padding: 0 20px 12px; }
   .status { display: none; }
   .chat-outline:hover .outline-panel,
@@ -1231,13 +1247,13 @@ textarea::placeholder { color: #858690; }
   }
   body.mobile-nav-open { overflow: hidden; }
   .mobile-menu-button { display: grid; width: 30px; height: 30px; }
-  .topbar { height: 56px; padding: 0 12px; }
+  .topbar { height: 56px; padding: 0 42px 0 12px; }
   .mobile-brand-mark { display: grid; width: 25px; height: 25px; font-size: 14px; }
   .topbar-title { min-width: 0; gap: 8px; }
   .topbar-tools { gap: 0; }
   .model-picker { gap: 0; padding-left: 6px; }
   .model-picker select { max-width: 145px; }
-  .messages { gap: 24px; padding: 22px 14px 16px; }
+  .messages { gap: 24px; padding: 22px 14px 72px; }
   .composer-area { padding: 0 10px 10px; }
   .composer { padding: 10px 10px 8px; }
   .scroll-to-bottom { width: 40px; height: 40px; }

@@ -59,11 +59,18 @@ const conversation = [];
 const maxImageBytes = 2 * 1024 * 1024;
 const maxServerMessages = 500;
 const maxActiveSkills = 3;
+const welcomeMessages = [
+  "Welcome to Chatbot! How can I help you today?",
+  "Hi there! Welcome to Chatbot. What would you like to chat about?",
+  "Hey! Welcome to Chatbot. What can I help you with?",
+  "Welcome! What would you like to explore or work on today?"
+];
 let availableModels = [];
 let chatHistory = [];
 let savedSkills = [];
 let activeSkillIds = [];
 let currentChatId = createChatId();
+let currentGreeting = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
 let pendingImage = null;
 let editingMessageIndex = null;
 let draftBeforeEdit = null;
@@ -120,12 +127,99 @@ function closeOutline() {
 
 function stopSpeechPlayback() {
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  resetSpeechButton();
+}
+
+function resetSpeechButton(button = activeSpeechButton) {
+  if (!button || activeSpeechButton !== button) return;
   if (activeSpeechButton) {
     activeSpeechButton.classList.remove("is-speaking");
     activeSpeechButton.setAttribute("aria-label", "Read response aloud");
     activeSpeechButton.title = "Read response aloud";
   }
   activeSpeechButton = null;
+}
+
+function splitSpeechText(text, maxLength = 180) {
+  const chunks = [];
+  let chunk = "";
+
+  for (const word of text.replace(/\s+/g, " ").trim().split(" ")) {
+    if (word.length > maxLength) {
+      if (chunk) chunks.push(chunk);
+      chunk = "";
+      const characters = Array.from(word);
+      for (let index = 0; index < characters.length; index += maxLength) {
+        const part = characters.slice(index, index + maxLength).join("");
+        if (part.length === maxLength || index + maxLength < characters.length) {
+          chunks.push(part);
+        } else {
+          chunk = part;
+        }
+      }
+      continue;
+    }
+
+    const nextChunk = chunk ? `${chunk} ${word}` : word;
+    if (nextChunk.length > maxLength) {
+      chunks.push(chunk);
+      chunk = word;
+    } else {
+      chunk = nextChunk;
+    }
+  }
+
+  if (chunk) chunks.push(chunk);
+  return chunks;
+}
+
+function getSpeechVoice(text) {
+  const requestedLanguage = /[\u0D00-\u0D7F]/.test(text)
+    ? "ml-IN"
+    : navigator.language || "en-US";
+  const voices = window.speechSynthesis.getVoices();
+  const languagePrefix = requestedLanguage.split("-")[0].toLowerCase();
+  const voice = voices.find((candidate) =>
+    candidate.lang.toLowerCase() === requestedLanguage.toLowerCase()
+  ) || voices.find((candidate) =>
+    candidate.lang.toLowerCase() === languagePrefix ||
+    candidate.lang.toLowerCase().startsWith(`${languagePrefix}-`)
+  ) || voices.find((candidate) => candidate.default) || voices[0] || null;
+
+  return {
+    voice,
+    language: voice
+      ? voice.lang
+      : requestedLanguage === "ml-IN"
+        ? navigator.language || "en-US"
+        : requestedLanguage
+  };
+}
+
+function speakSpeechChunk(chunks, index, button, speechVoice) {
+  if (activeSpeechButton !== button) return;
+  if (index >= chunks.length) {
+    resetSpeechButton(button);
+    return;
+  }
+
+  try {
+    const utterance = new window.SpeechSynthesisUtterance(chunks[index]);
+    utterance.lang = speechVoice.language;
+    if (speechVoice.voice) utterance.voice = speechVoice.voice;
+    utterance.onend = () => speakSpeechChunk(chunks, index + 1, button, speechVoice);
+    utterance.onerror = (event) => {
+      if (activeSpeechButton !== button) return;
+      stopSpeechPlayback();
+      if (event.error !== "canceled" && event.error !== "interrupted") {
+        setActionStatus("Text-to-speech failed. Check your browser's speech settings.");
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    stopSpeechPlayback();
+    setActionStatus("Text-to-speech could not start.");
+  }
 }
 
 function readMessageAloud(message, article, button) {
@@ -143,29 +237,20 @@ function readMessageAloud(message, article, button) {
   if (!text) return;
 
   stopSpeechPlayback();
-  const utterance = new window.SpeechSynthesisUtterance(text);
-  utterance.lang = /[\u0D00-\u0D7F]/.test(text) ? "ml-IN" : navigator.language || "en-US";
-  utterance.onend = () => {
-    if (activeSpeechButton === button) stopSpeechPlayback();
-  };
-  utterance.onerror = (event) => {
-    if (activeSpeechButton !== button) return;
+  let speechVoice;
+  try {
+    speechVoice = getSpeechVoice(text);
+  } catch {
     stopSpeechPlayback();
-    if (event.error !== "canceled") {
-      setActionStatus("Text-to-speech failed. Check your browser's speech settings.");
-    }
-  };
+    setActionStatus("Text-to-speech could not load an available voice.");
+    return;
+  }
 
   activeSpeechButton = button;
   button.classList.add("is-speaking");
   button.setAttribute("aria-label", "Stop reading aloud");
   button.title = "Stop reading aloud";
-  try {
-    window.speechSynthesis.speak(utterance);
-  } catch {
-    stopSpeechPlayback();
-    setActionStatus("Text-to-speech could not start.");
-  }
+  speakSpeechChunk(splitSpeechText(text), 0, button, speechVoice);
 }
 
 function appendMessageActions(message, index, messageColumn) {
@@ -254,7 +339,7 @@ function addMessage(message, index) {
   messageColumn.className = "message-column";
   messageColumn.append(messageContent);
 
-  if (!message.isGreeting && !message.isStreaming) {
+  if (!message.isStreaming) {
     appendMessageActions(message, index, messageColumn);
   }
 
@@ -542,7 +627,7 @@ function renderMessages() {
   if (conversation.length === 0) {
     addMessage({
       role: "assistant",
-      content: "Hi! What can I help you with today?",
+      content: currentGreeting,
       isGreeting: true
     }, -1);
   } else {
@@ -625,6 +710,8 @@ async function loadChatHistory(restoreLatest = false) {
       } else {
         renderMessages();
       }
+    } else if (conversation.length === 0) {
+      renderMessages();
     }
   } catch (error) {
     showError(error.message || "Saved chat history could not be loaded.");
@@ -721,6 +808,7 @@ async function deleteChat(chatId) {
     if (currentChatId === chatId) {
       conversation.length = 0;
       currentChatId = createChatId();
+      currentGreeting = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
       activeSkillIds = [];
       editingMessageIndex = null;
       draftBeforeEdit = null;
@@ -1060,6 +1148,7 @@ function startNewChat() {
   closeMobileNav(false);
   conversation.length = 0;
   currentChatId = createChatId();
+  currentGreeting = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
   activeSkillIds = [];
   editingMessageIndex = null;
   draftBeforeEdit = null;
@@ -1214,8 +1303,11 @@ function isAtBottom() {
 }
 
 function updateScrollToBottomButton() {
-  scrollToBottomButton.hidden =
-    messagesElement.scrollHeight <= messagesElement.clientHeight + 1;
+  const hasOverflow = messagesElement.scrollHeight > messagesElement.clientHeight + 1;
+  const awayFromBottom =
+    messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight > 48;
+  scrollToBottomButton.hidden = !hasOverflow;
+  scrollToBottomButton.classList.toggle("is-visible", hasOverflow && awayFromBottom);
 }
 
 function scrollToBottom() {
@@ -1274,7 +1366,7 @@ async function loadModels() {
       setConnectionStatus("offline", "Ollama is ready");
       showError("No models found. Install one with Ollama, then refresh the model list.");
     } else {
-      const autoOption = new Option("Auto · best for request", "auto");
+      const autoOption = new Option("Auto", "auto");
       autoOption.dataset.vision = String(availableModels.some(modelHasVision));
       modelSelect.add(autoOption);
       for (const model of availableModels) {
@@ -1461,9 +1553,11 @@ webSearchToggle.addEventListener("click", () => {
   webSearchToggle.setAttribute("aria-pressed", String(webSearchEnabled));
   webSearchToggle.textContent = webSearchEnabled ? "Web Auto" : "Web Off";
   webSearchToggle.title = webSearchEnabled
-    ? "Automatic web research is on for current and research questions. Click to turn it off."
-    : "Web research is off. Click to allow automatic searches for current and research questions.";
-  setActionStatus(webSearchEnabled ? "Automatic web research enabled." : "Web research disabled.");
+    ? "Automatically search the web and Wikipedia for current and research questions. Click to turn it off."
+    : "Web and Wikipedia research are off. Click to allow automatic searches for current and research questions.";
+  setActionStatus(webSearchEnabled
+    ? "Automatic web and Wikipedia research enabled."
+    : "Web and Wikipedia research disabled.");
 });
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1796,6 +1890,6 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-loadChatHistory(true);
+loadChatHistory();
 loadModels();
 loadSettings();

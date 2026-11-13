@@ -148,6 +148,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.match(pageHtml, /personality-select/);
   assert.match(pageHtml, /mobile-menu-button/);
   assert.match(pageHtml, /mobile-nav-backdrop/);
+  assert.match(pageHtml, /search the web and Wikipedia/i);
 
   const modelResponse = await fetch(`${appUrl}/api/models`);
   assert.equal(modelResponse.status, 200);
@@ -411,15 +412,30 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(receivedChats[6].model, "deepseek-r1:8b");
 
   const searchQueries = [];
+  const wikipediaQueries = [];
+  let failWebSearch = false;
   const originalFetch = globalThis.fetch;
   t.mock.method(globalThis, "fetch", async (input, options) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname === "html.duckduckgo.com") {
       searchQueries.push(url.searchParams.get("q"));
+      if (failWebSearch) throw new Error("DuckDuckGo unavailable");
       return new Response(
         '<div class="result"><h2><a class="result__a" href="https://example.com/research">Research Source</a></h2><a class="result__snippet">Current findings &amp; methodology</a></div>',
         { status: 200, headers: { "Content-Type": "text/html" } }
       );
+    }
+    if (url.hostname === "en.wikipedia.org") {
+      wikipediaQueries.push(url.searchParams.get("gsrsearch"));
+      return new Response(JSON.stringify({
+        query: {
+          pages: [{
+            title: "Local model performance",
+            fullurl: "https://en.wikipedia.org/wiki/Local_model_performance",
+            extract: "Wikipedia background and overview."
+          }]
+        }
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     return originalFetch(input, options);
   });
@@ -437,7 +453,9 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(webDisabledResponse.status, 200);
   await webDisabledResponse.text();
   assert.deepEqual(searchQueries, []);
+  assert.deepEqual(wikipediaQueries, []);
 
+  const researchPrompt = "Research the latest findings about local model performance.";
   const webResearchResponse = await fetch(`${appUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -445,7 +463,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
       chatId: "test-chat-web-research",
       model: "gemma4:e2b",
       webSearch: true,
-      messages: [{ role: "user", content: "Research the latest findings about local model performance." }]
+      messages: [{ role: "user", content: researchPrompt }]
     })
   });
   assert.equal(webResearchResponse.status, 200);
@@ -453,6 +471,29 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     JSON.parse(event.replace(/^data:\s*/, ""))
   );
   assert.match(webResearchEvents.at(-1).reply, /### Sources[\s\S]*\[Research Source\]\(https:\/\/example\.com\/research\)/);
+  assert.match(webResearchEvents.at(-1).reply, /\[Local model performance\]\(https:\/\/en\.wikipedia\.org\/wiki\/Local_model_performance\) \(Wikipedia\)/);
   assert.match(receivedChats[8].messages[0].content, /Current findings & methodology/);
-  assert.deepEqual(searchQueries, ["Research the latest findings about local model performance."]);
+  assert.match(receivedChats[8].messages[0].content, /Wikipedia background and overview/);
+  assert.deepEqual(searchQueries, [researchPrompt]);
+  assert.deepEqual(wikipediaQueries, [researchPrompt]);
+
+  failWebSearch = true;
+  const wikipediaOnlyResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-wikipedia-only",
+      model: "gemma4:e2b",
+      webSearch: true,
+      messages: [{ role: "user", content: "Wikipedia: local model performance" }]
+    })
+  });
+  assert.equal(wikipediaOnlyResponse.status, 200);
+  const wikipediaOnlyEvents = (await wikipediaOnlyResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.replace(/^data:\s*/, ""))
+  );
+  assert.match(wikipediaOnlyEvents.at(-1).reply, /Could not search: Web search\./);
+  assert.match(wikipediaOnlyEvents.at(-1).reply, /\(Wikipedia\)/);
+  assert.deepEqual(searchQueries, [researchPrompt, "Wikipedia: local model performance"]);
+  assert.deepEqual(wikipediaQueries, [researchPrompt, "Wikipedia: local model performance"]);
 });
