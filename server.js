@@ -468,7 +468,7 @@ function validateChatBody(body) {
       typeof body.chatId !== "string" ||
       !/^[A-Za-z0-9._-]{1,120}$/.test(body.chatId) ||
       typeof body.model !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(body.model) ||
+      (body.model !== "auto" && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(body.model)) ||
       !Array.isArray(body.messages) ||
       body.messages.length === 0 ||
       body.messages.length > maxMessages ||
@@ -496,6 +496,79 @@ function validateChatBody(body) {
   }) && body.messages[body.messages.length - 1].role === "user";
 }
 
+function modelDetails(model) {
+  return model.details && typeof model.details === "object" ? model.details : {};
+}
+
+function modelSupportsVision(model) {
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+  if (capabilities.includes("vision")) return true;
+
+  const details = modelDetails(model);
+  const name = `${model.name || model.model || ""} ${details.family || ""}`.toLowerCase();
+  return /(llava|bakllava|moondream|minicpm-v|gemma3|vision|qwen[\w.-]*vl)/i.test(name);
+}
+
+function modelParameterSize(model) {
+  const details = modelDetails(model);
+  const parameterSize = details.parameter_size || model.parameter_size || "";
+  const parameterMatch = /(\d+(?:\.\d+)?)\s*([bm])\b/i.exec(String(parameterSize)) ||
+    /(\d+(?:\.\d+)?)([bm])\b/i.exec(String(model.name || model.model || ""));
+  if (parameterMatch) {
+    const count = Number(parameterMatch[1]);
+    return parameterMatch[2].toLowerCase() === "m" ? count / 1000 : count;
+  }
+  return Number.isFinite(model.size) && model.size > 0
+    ? model.size / (1024 ** 3)
+    : 0;
+}
+
+function modelReasoningScore(model) {
+  const details = modelDetails(model);
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+  const name = `${model.name || model.model || ""} ${details.family || ""}`.toLowerCase();
+  let score = modelParameterSize(model) * 10;
+
+  if (capabilities.some((capability) => /reason|think/i.test(capability))) score += 120;
+  if (/(deepseek-r1|qwq|reasoner)/i.test(name)) score += 100;
+  else if (/qwen3/i.test(name)) score += 80;
+  else if (/(deepseek|qwen2\.5|phi-4)/i.test(name)) score += 45;
+  else if (/gemma3|llama3\.3|mistral/i.test(name)) score += 25;
+
+  return score;
+}
+
+function selectAutoModel(models, { requiresVision = false, requiresReasoning = false } = {}) {
+  const candidates = models.filter((model) => !requiresVision || modelSupportsVision(model));
+  if (!candidates.length) {
+    const message = requiresVision
+      ? "Auto selection needs an installed vision-capable Ollama model. Install one or select a vision model."
+      : "No Ollama models are installed for automatic selection.";
+    throw Object.assign(new Error(message), { statusCode: 422 });
+  }
+
+  candidates.sort((left, right) => {
+    const scoreDifference = requiresReasoning
+      ? modelReasoningScore(right) - modelReasoningScore(left)
+      : modelParameterSize(left) - modelParameterSize(right);
+    return scoreDifference || (left.name || left.model).localeCompare(right.name || right.model);
+  });
+  return candidates[0].name || candidates[0].model;
+}
+
+async function getInstalledModels() {
+  const upstream = await fetch(getOllamaUrl("/api/tags"), {
+    signal: AbortSignal.timeout(8000)
+  });
+  const result = await upstream.json().catch(() => null);
+  if (!upstream.ok) {
+    throw Object.assign(new Error("Ollama could not list its installed models."), { statusCode: 502 });
+  }
+  return result && Array.isArray(result.models)
+    ? result.models.filter((model) => model && typeof (model.name || model.model) === "string")
+    : [];
+}
+
 async function handleModels(request, response) {
   if (request.method !== "GET") {
     sendJson(response, 405, { error: "Method not allowed." });
@@ -503,24 +576,18 @@ async function handleModels(request, response) {
   }
 
   try {
-    const upstream = await fetch(getOllamaUrl("/api/tags"), {
-      signal: AbortSignal.timeout(8000)
+    const models = (await getInstalledModels()).map((model) => {
+      const details = modelDetails(model);
+      const capabilities = Array.isArray(model.capabilities) ? [...model.capabilities] : [];
+      if (modelSupportsVision(model) && !capabilities.includes("vision")) capabilities.push("vision");
+      return {
+        name: model.name || model.model,
+        capabilities,
+        family: typeof details.family === "string" ? details.family : null,
+        parameterSize: typeof details.parameter_size === "string" ? details.parameter_size : null,
+        sizeBytes: Number.isFinite(model.size) ? model.size : null
+      };
     });
-    const result = await upstream.json().catch(() => null);
-
-    if (!upstream.ok) {
-      sendJson(response, 502, { error: "Ollama could not list its installed models." });
-      return;
-    }
-
-    const models = result && Array.isArray(result.models)
-      ? result.models
-        .filter((model) => model && typeof (model.name || model.model) === "string")
-        .map((model) => ({
-          name: model.name || model.model,
-          capabilities: Array.isArray(model.capabilities) ? model.capabilities : []
-        }))
-      : [];
     sendJson(response, 200, { models });
   } catch (error) {
     const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
@@ -616,6 +683,17 @@ async function handleChat(request, response) {
   response.on("close", abortOnDisconnect);
 
   try {
+    let selectedModel = body.model;
+    if (selectedModel === "auto") {
+      const lastMessage = body.messages[body.messages.length - 1].content;
+      const requiresReasoning = (body.skillIds && body.skillIds.length > 0) ||
+        /\b(calculate|calculation|compute|solve|equation|math|mathematics|logic|reasoning|prove|proof|analy[sz]e|compare|derive|deduce)\b|step[- ]by[- ]step|(?:\d+\s*[+\-*\/=]\s*\d+)/i.test(lastMessage);
+      selectedModel = selectAutoModel(await getInstalledModels(), {
+        requiresVision: body.messages.some((message) => message.image),
+        requiresReasoning
+      });
+    }
+
     const memoryStore = readChatStore();
     const context = buildSystemContext(memoryStore, body.chatId, body.skillIds);
     const chatMessages = body.messages.slice(-20).map((message) => ({
@@ -631,7 +709,7 @@ async function handleChat(request, response) {
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(120000)]),
       body: JSON.stringify({
-        model: body.model,
+        model: selectedModel,
         stream: true,
         messages
       })
@@ -654,9 +732,10 @@ async function handleChat(request, response) {
       "X-Accel-Buffering": "no"
     });
     response.flushHeaders();
+    writeChatEvent(response, { model: selectedModel });
     const reply = await streamOllamaReply(upstream, response);
-    saveChat(readChatStore(), body.chatId, body.messages, reply, body.model, body.skillIds || []);
-    writeChatEvent(response, { done: true, reply });
+    saveChat(readChatStore(), body.chatId, body.messages, reply, selectedModel, body.skillIds || []);
+    writeChatEvent(response, { done: true, reply, model: selectedModel });
     response.end();
   } catch (error) {
     const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
@@ -813,7 +892,7 @@ async function handleSkills(request, response) {
   const body = await readRequestBody(request, response);
   if (!body) return;
   if (typeof body.model !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(body.model) ||
+      (body.model !== "auto" && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/.test(body.model)) ||
       typeof body.request !== "string" ||
       !body.request.trim() ||
       body.request.length > 4000 ||
@@ -823,6 +902,16 @@ async function handleSkills(request, response) {
         (typeof body.folderPath !== "string" || body.folderPath.length > 4096))) {
     sendJson(response, 400, { error: "Provide a model, skill instructions, and an optional name and folder path." });
     return;
+  }
+
+  let selectedModel = body.model;
+  if (selectedModel === "auto") {
+    try {
+      selectedModel = selectAutoModel(await getInstalledModels(), { requiresReasoning: true });
+    } catch (error) {
+      sendJson(response, error.statusCode || 502, { error: error.message || "Could not choose an Ollama model for skill generation." });
+      return;
+    }
   }
 
   let source = null;
@@ -860,8 +949,8 @@ async function handleSkills(request, response) {
   });
   writeChatEvent(response, {
     progress: source
-      ? `Reviewing ${generationFiles.length} representative files (${source.files.length} found) before generating the skill…`
-      : "Waiting for Ollama to generate the skill…"
+      ? `Using ${selectedModel}. Reviewing ${generationFiles.length} representative files (${source.files.length} found)…`
+      : `Using ${selectedModel} to generate the skill…`
   });
   const abortController = new AbortController();
   const abortOnClose = () => {
@@ -878,7 +967,7 @@ async function handleSkills(request, response) {
         AbortSignal.timeout(skillGenerationTimeoutMs)
       ]),
       body: JSON.stringify({
-        model: body.model,
+        model: selectedModel,
         stream: true,
         format: {
           type: "object",

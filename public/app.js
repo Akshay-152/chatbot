@@ -987,6 +987,13 @@ function modelSupportsVision() {
   return selectedOption && selectedOption.dataset.vision === "true";
 }
 
+function modelHasVision(model) {
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+  const name = `${model.name || ""} ${model.family || ""}`;
+  return capabilities.includes("vision") ||
+    /(llava|bakllava|moondream|minicpm-v|gemma3|vision|qwen[\w.-]*vl)/i.test(name);
+}
+
 function setLoading(loading) {
   isLoading = loading;
   messagesElement.setAttribute("aria-busy", String(loading));
@@ -1038,18 +1045,22 @@ async function loadModels() {
       setConnectionStatus("offline", "Ollama is ready");
       showError("No models found. Install one with Ollama, then refresh the model list.");
     } else {
+      const autoOption = new Option("Auto · best for request", "auto");
+      autoOption.dataset.vision = String(availableModels.some(modelHasVision));
+      modelSelect.add(autoOption);
       for (const model of availableModels) {
-        const supportsVision = Array.isArray(model.capabilities) && model.capabilities.includes("vision");
+        const supportsVision = modelHasVision(model);
         const option = new Option(`${model.name}${supportsVision ? " · Vision" : ""}`, model.name);
         option.dataset.vision = String(supportsVision);
         modelSelect.add(option);
       }
-      modelSelect.value = availableModels.some((model) => model.name === previousModel)
+      modelSelect.value = previousModel === "auto" || availableModels.some((model) => model.name === previousModel)
         ? previousModel
-        : availableModels[0].name;
+        : "auto";
       modelsAvailable = true;
       errorMessage.hidden = true;
       setConnectionStatus("online", `${availableModels.length} model${availableModels.length === 1 ? "" : "s"} available`);
+      modelSelect.title = "Auto uses a vision model for images, a reasoning model for skills and math, and a fast model for other requests.";
     }
   } catch (error) {
     modelSelect.replaceChildren(new Option("Ollama unavailable", ""));
@@ -1245,11 +1256,12 @@ if (SpeechRecognition) {
   voiceButton.title = "Voice typing is not supported in this browser";
 }
 
-async function readChatEventStream(response, onToken) {
+async function readChatEventStream(response, onToken, onModel) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let reply = "";
+  let model = null;
   let completed = false;
 
   function consumeLine(line) {
@@ -1261,6 +1273,10 @@ async function readChatEventStream(response, onToken) {
       throw new Error("The chat server returned an invalid response.");
     }
     if (event.error) throw new Error(event.error);
+    if (typeof event.model === "string") {
+      model = event.model;
+      onModel(model);
+    }
     if (typeof event.token === "string") {
       reply += event.token;
       onToken(reply);
@@ -1286,7 +1302,7 @@ async function readChatEventStream(response, onToken) {
   if (!completed || !reply.trim()) {
     throw new Error("The response stream ended before Ollama finished.");
   }
-  return reply;
+  return { reply, model };
 }
 
 async function readSkillEventStream(response) {
@@ -1372,7 +1388,7 @@ form.addEventListener("submit", async (event) => {
   const streamingMessage = {
     role: "assistant",
     content: "",
-    model: modelSelect.value,
+    model: modelSelect.value === "auto" ? "Auto" : modelSelect.value,
     isStreaming: true
   };
   const assistantBubble = addMessage(streamingMessage, conversation.length);
@@ -1411,16 +1427,25 @@ form.addEventListener("submit", async (event) => {
       throw new Error("The chat server did not start a response stream.");
     }
 
-    const reply = await readChatEventStream(response, (partialReply) => {
-      pendingReply = partialReply;
-      if (!streamRenderFrame) {
-        streamRenderFrame = requestAnimationFrame(() => {
-          liveOutput.textContent = pendingReply;
-          messagesElement.scrollTop = messagesElement.scrollHeight;
-          streamRenderFrame = 0;
-        });
+    const streamResult = await readChatEventStream(
+      response,
+      (partialReply) => {
+        pendingReply = partialReply;
+        if (!streamRenderFrame) {
+          streamRenderFrame = requestAnimationFrame(() => {
+            liveOutput.textContent = pendingReply;
+            messagesElement.scrollTop = messagesElement.scrollHeight;
+            streamRenderFrame = 0;
+          });
+        }
+      },
+      (selectedModel) => {
+        const modelLabel = assistantBubble.querySelector(".response-model");
+        if (modelLabel) modelLabel.textContent = selectedModel;
       }
-    });
+    );
+    const reply = streamResult.reply;
+    const responseModel = streamResult.model || modelSelect.value;
     if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
     liveOutput.textContent = reply;
 
@@ -1435,7 +1460,7 @@ form.addEventListener("submit", async (event) => {
     const assistantMessage = {
       role: "assistant",
       content: reply,
-      model: modelSelect.value,
+      model: responseModel,
       isArriving: true
     };
     conversation.push(assistantMessage);

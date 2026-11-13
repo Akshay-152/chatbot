@@ -13,8 +13,24 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({
         models: [
-          { name: "llama2:latest", capabilities: ["completion"] },
-          { name: "gemma4:e2b", capabilities: ["completion", "vision"] }
+          {
+            name: "llama2:latest",
+            capabilities: ["completion"],
+            size: 4 * 1024 ** 3,
+            details: { family: "llama", parameter_size: "4B" }
+          },
+          {
+            name: "gemma4:e2b",
+            capabilities: ["completion", "vision"],
+            size: 2 * 1024 ** 3,
+            details: { family: "gemma", parameter_size: "2B" }
+          },
+          {
+            name: "deepseek-r1:8b",
+            capabilities: ["completion", "thinking"],
+            size: 5 * 1024 ** 3,
+            details: { family: "deepseek", parameter_size: "8B" }
+          }
         ]
       }));
       return;
@@ -126,8 +142,27 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(modelResponse.status, 200);
   assert.deepEqual(await modelResponse.json(), {
     models: [
-      { name: "llama2:latest", capabilities: ["completion"] },
-      { name: "gemma4:e2b", capabilities: ["completion", "vision"] }
+      {
+        name: "llama2:latest",
+        capabilities: ["completion"],
+        family: "llama",
+        parameterSize: "4B",
+        sizeBytes: 4 * 1024 ** 3
+      },
+      {
+        name: "gemma4:e2b",
+        capabilities: ["completion", "vision"],
+        family: "gemma",
+        parameterSize: "2B",
+        sizeBytes: 2 * 1024 ** 3
+      },
+      {
+        name: "deepseek-r1:8b",
+        capabilities: ["completion", "thinking"],
+        family: "deepseek",
+        parameterSize: "8B",
+        sizeBytes: 5 * 1024 ** 3
+      }
     ]
   });
 
@@ -136,7 +171,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chatId: "test-chat-1",
-      model: "gemma4:e2b",
+      model: "auto",
       messages: [{
         role: "user",
         content: "Remember my favorite color is violet. What is in this picture?",
@@ -152,6 +187,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   );
   assert.deepEqual(streamEvents.filter((event) => event.token).map((event) => event.token), ["I can ", "see the photo."]);
   assert.equal(streamEvents.at(-1).reply, "I can see the photo.");
+  assert.equal(streamEvents.find((event) => event.model).model, "gemma4:e2b");
   assert.equal(receivedChats[0].model, "gemma4:e2b");
   assert.equal(receivedChats[0].stream, true);
   assert.deepEqual(receivedChats[0].messages[0].images, ["aGVsbG8="]);
@@ -180,6 +216,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     })
   });
   assert.equal(memoryChatResponse.status, 200);
+  assert.equal(receivedChats[1].model, "gemma4:e2b");
   assert.equal(receivedChats[1].messages[0].role, "system");
   assert.match(receivedChats[1].messages[0].content, /favorite color is violet/);
   assert.equal(receivedChats[1].messages[1].content, "What color do I like?");
@@ -219,7 +256,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gemma4:e2b",
+      model: "auto",
       name: "Project conventions",
       request: "Create a skill for making changes in this project's style.",
       folderPath: projectDirectory
@@ -237,6 +274,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(skill.fileCount, 20);
   assert.equal(skill.sourcePath, fs.realpathSync(projectDirectory));
   assert.equal(receivedChats[2].stream, true);
+  assert.equal(receivedChats[2].model, "deepseek-r1:8b");
   assert.equal(receivedChats[2].options.num_predict, 2048);
   assert.deepEqual(receivedChats[2].format.required, ["name", "summary", "instructions"]);
   const skillPrompt = JSON.parse(receivedChats[2].messages[1].content);
@@ -253,13 +291,14 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chatId: "test-chat-3",
-      model: "gemma4:e2b",
+      model: "auto",
       skillIds: [skill.id],
       messages: [{ role: "user", content: "Use the project conventions." }]
     })
   });
   assert.equal(skilledChatResponse.status, 200);
   await skilledChatResponse.text();
+  assert.equal(receivedChats[3].model, "deepseek-r1:8b");
   assert.match(receivedChats[3].messages[0].content, /The user prefers concise steps/);
   assert.match(receivedChats[3].messages[0].content, /Project conventions/);
   assert.match(receivedChats[3].messages[0].content, /function localHelper/);
@@ -269,7 +308,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gemma4:e2b",
+      model: "auto",
       name: "Truncated skill",
       request: "simulate truncation"
     })
@@ -307,4 +346,30 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
     })
   });
   assert.equal(invalidImageResponse.status, 400);
+
+  const fastAutoResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-auto-fast",
+      model: "auto",
+      messages: [{ role: "user", content: "Say hello." }]
+    })
+  });
+  assert.equal(fastAutoResponse.status, 200);
+  await fastAutoResponse.text();
+  assert.equal(receivedChats[5].model, "gemma4:e2b");
+
+  const reasoningAutoResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-auto-reasoning",
+      model: "auto",
+      messages: [{ role: "user", content: "Calculate 144 / 12 and show the reasoning." }]
+    })
+  });
+  assert.equal(reasoningAutoResponse.status, 200);
+  await reasoningAutoResponse.text();
+  assert.equal(receivedChats[6].model, "deepseek-r1:8b");
 });
