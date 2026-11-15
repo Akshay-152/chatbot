@@ -3,6 +3,7 @@ const promptInput = document.querySelector("#prompt");
 const messagesElement = document.querySelector("#messages");
 const scrollToBottomButton = document.querySelector("#scroll-to-bottom");
 const sendButton = document.querySelector("#send-button");
+const stopButton = document.querySelector("#stop-button");
 const errorMessage = document.querySelector("#error-message");
 const actionStatus = document.querySelector("#action-status");
 const modelSelect = document.querySelector("#model-select");
@@ -15,10 +16,9 @@ const mobileNavBackdrop = document.querySelector("#mobile-nav-backdrop");
 const mobileViewport = window.matchMedia("(max-width: 560px)");
 const imageInput = document.querySelector("#image-input");
 const uploadButton = document.querySelector("#upload-button");
+const composerDropHint = document.querySelector("#composer-drop-hint");
 const attachmentPreview = document.querySelector("#attachment-preview");
-const attachmentImage = document.querySelector("#attachment-image");
-const attachmentName = document.querySelector("#attachment-name");
-const removeAttachmentButton = document.querySelector("#remove-attachment");
+const attachmentList = document.querySelector("#attachment-list");
 const imageModelHint = document.querySelector("#image-model-hint");
 const voiceButton = document.querySelector("#voice-button");
 const voiceModeElement = document.querySelector("#voice-mode");
@@ -36,6 +36,10 @@ const newChatButton = document.querySelector("#new-chat-button");
 const chatHistoryButton = document.querySelector("#chat-history-button");
 const copyInputButton = document.querySelector("#copy-input-button");
 const copyOutputButton = document.querySelector("#copy-output-button");
+const exportChatButton = document.querySelector("#export-chat-button");
+const historySearchInput = document.querySelector("#history-search");
+const instructionsInput = document.querySelector("#instructions-input");
+const saveInstructionsButton = document.querySelector("#save-instructions-button");
 const editMessageControls = document.querySelector("#edit-message-controls");
 const cancelEditButton = document.querySelector("#cancel-edit-button");
 const historyList = document.querySelector("#history-list");
@@ -72,8 +76,15 @@ const skillPopover = document.querySelector("#skill-popover");
 const skillPickerList = document.querySelector("#skill-picker-list");
 const manageSkillsButton = document.querySelector("#manage-skills-button");
 
+
 const conversation = [];
 const maxImageBytes = 2 * 1024 * 1024;
+const maxPdfBytes = 5 * 1024 * 1024;
+const maxAttachments = 12;
+const maxChatAttachments = 5;
+const maxTotalAttachmentBytes = 24 * 1024 * 1024;
+const maxBatchInstructionLength = 2000;
+const maxUserMessageLength = 40000;
 const maxServerMessages = 500;
 const maxActiveSkills = 3;
 const welcomeMessages = [
@@ -88,14 +99,19 @@ let savedSkills = [];
 let activeSkillIds = [];
 let currentChatId = createChatId();
 let currentGreeting = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
-let pendingImage = null;
+let pendingImages = [];
+let pendingDocuments = [];
 let editingMessageIndex = null;
 let draftBeforeEdit = null;
 let isLoading = false;
+let isProcessingAttachments = false;
 let modelsAvailable = false;
 let activeSpeechButton = null;
 let webSearchEnabled = true;
 let settingsReturnFocus = null;
+let recentImageContext = [];
+let isBatchProcessing = false;
+let activeChatController = null;
 
 const suggestedPrompts = [
   { label: "Explain a concept", prompt: "Explain a topic in simple terms" },
@@ -345,6 +361,31 @@ function appendMessageActions(message, index, messageColumn) {
   actions.append(copyButton);
 
   if (message.role === "assistant") {
+    const downloadButton = document.createElement("button");
+    downloadButton.type = "button";
+    downloadButton.textContent = "Download .md";
+    downloadButton.setAttribute("aria-label", "Download this response as Markdown");
+    downloadButton.addEventListener("click", () => downloadResponse(message.content));
+    actions.append(downloadButton);
+
+    if (index >= 0 && index === conversation.length - 1) {
+      const regenerateButton = document.createElement("button");
+      regenerateButton.type = "button";
+      regenerateButton.textContent = "Regenerate";
+      regenerateButton.setAttribute("aria-label", "Regenerate this reply");
+      regenerateButton.addEventListener("click", regenerateResponse);
+      actions.append(regenerateButton);
+
+      if (message.truncated) {
+        const continueButton = document.createElement("button");
+        continueButton.type = "button";
+        continueButton.textContent = "Continue";
+        continueButton.setAttribute("aria-label", "Continue this reply");
+        continueButton.addEventListener("click", continueReply);
+        actions.append(continueButton);
+      }
+    }
+
     const readButton = document.createElement("button");
     readButton.className = "read-aloud-button";
     readButton.type = "button";
@@ -356,6 +397,76 @@ function appendMessageActions(message, index, messageColumn) {
   }
 
   messageColumn.append(actions);
+}
+
+function regenerateResponse() {
+  if (isLoading || conversation.length === 0) return;
+  let lastUserIndex = -1;
+  conversation.forEach((message, index) => {
+    if (message.role === "user") lastUserIndex = index;
+  });
+  if (lastUserIndex === -1) return;
+
+  const lastUserMessage = conversation[lastUserIndex];
+  editUserMessage(lastUserIndex);
+  if (lastUserMessage.hadImage && pendingImages.length === 0 && recentImageContext.length) {
+    pendingImages = recentImageContext.slice();
+    renderPendingAttachments();
+  }
+  updateSendButton();
+  setActionStatus("Regenerating the last reply…");
+  form.requestSubmit();
+}
+
+function continueReply() {
+  if (isLoading || !modelsAvailable) return;
+  promptInput.value = "Continue from where you stopped, without repeating anything.";
+  promptInput.dispatchEvent(new Event("input", { bubbles: true }));
+  setActionStatus("Continuing the reply…");
+  form.requestSubmit();
+}
+
+function downloadTextFile(content, filename, mimeType = "text/markdown") {
+  const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function exportConversation() {
+  if (conversation.length === 0) return;
+  const chat = chatHistory.find((item) => item.id === currentChatId);
+  const title = (chat && chat.title) || "Conversation";
+  const lines = [
+    `# ${title}`,
+    "",
+    `Exported from the local Chatbot on ${new Date().toLocaleString()}.`,
+    ""
+  ];
+  for (const message of conversation) {
+    lines.push(`## ${message.role === "user" ? "You" : "Assistant"}${message.model ? ` · ${message.model}` : ""}`, "");
+    if (message.hadImage) lines.push("_Images were attached to this message and are not saved._", "");
+    for (const document of message.documents || []) {
+      lines.push(`_Attached PDF: ${document.name}_`, "");
+    }
+    lines.push(message.content, "");
+  }
+  downloadTextFile(lines.join("\n"), `chat-${new Date().toISOString().slice(0, 10)}.md`);
+  setActionStatus("Conversation exported as Markdown.");
+}
+
+function downloadResponse(content) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "assistant-response.md";
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  setActionStatus("Response downloaded as Markdown.");
 }
 
 function addMessage(message, index) {
@@ -404,16 +515,31 @@ function addMessage(message, index) {
       messageContent.append(renderStructuredOutput(message.content));
     }
   } else {
-    if (message.image) {
+    const images = message.images || (message.image ? [message.image] : []);
+    for (const image of images) {
       const preview = document.createElement("img");
       preview.className = "message-image";
-      preview.src = `data:${message.image.mimeType};base64,${message.image.data}`;
-      preview.alt = "Photo attached to this message";
+      preview.src = `data:${image.mimeType};base64,${image.data}`;
+      preview.alt = "Image attached to this message";
       messageContent.append(preview);
-    } else if (message.hadImage) {
+    }
+    if (!images.length && message.hadImage) {
       const note = document.createElement("span");
       note.className = "image-history-note";
-      note.textContent = "Photo attachment was not retained in saved history.";
+      note.textContent = "Image attachments were not retained in saved history.";
+      messageContent.append(note);
+    }
+    const documents = message.documents || [];
+    for (const attachment of documents) {
+      const label = document.createElement("span");
+      label.className = "document-history-note";
+      label.textContent = `PDF processed: ${attachment.name}`;
+      messageContent.append(label);
+    }
+    if (!documents.length && message.hadDocuments) {
+      const note = document.createElement("span");
+      note.className = "document-history-note";
+      note.textContent = "PDF text was processed; the source file is not retained.";
       messageContent.append(note);
     }
 
@@ -706,6 +832,7 @@ function updateToolbarState() {
   const hasOutput = conversation.some((message) => message.role === "assistant");
   copyInputButton.disabled = !hasInput;
   copyOutputButton.disabled = !hasOutput;
+  exportChatButton.disabled = conversation.length === 0;
 }
 
 function renderMessages() {
@@ -806,19 +933,33 @@ async function loadChatHistory(restoreLatest = false) {
   }
 }
 
+function sortChatHistory() {
+  chatHistory.sort((left, right) =>
+    Number(right.pinned === true) - Number(left.pinned === true) ||
+    right.updatedAt.localeCompare(left.updatedAt)
+  );
+}
+
 function renderHistoryList() {
   historyList.replaceChildren();
-  if (chatHistory.length === 0) {
+  const query = historySearchInput.value.trim().toLowerCase();
+  const matches = query
+    ? chatHistory.filter((chat) => (chat.title || "Conversation").toLowerCase().includes(query))
+    : chatHistory;
+
+  if (matches.length === 0) {
     const empty = document.createElement("p");
     empty.className = "history-empty";
-    empty.textContent = "Your conversations will appear here after a reply.";
+    empty.textContent = query
+      ? `No conversations match “${historySearchInput.value.trim()}”.`
+      : "Your conversations will appear here after a reply.";
     historyList.append(empty);
     return;
   }
 
-  for (const chat of chatHistory) {
+  for (const chat of matches) {
     const entry = document.createElement("div");
-    entry.className = `history-entry${chat.id === currentChatId ? " is-active" : ""}`;
+    entry.className = `history-entry${chat.id === currentChatId ? " is-active" : ""}${chat.pinned ? " is-pinned" : ""}`;
     const button = document.createElement("button");
     button.className = "history-item";
     button.type = "button";
@@ -830,8 +971,32 @@ function renderHistoryList() {
       restoreChat(chat.id);
     });
 
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+
+    const pinButton = document.createElement("button");
+    pinButton.className = "icon-button history-action-button";
+    pinButton.type = "button";
+    pinButton.disabled = isLoading;
+    pinButton.textContent = chat.pinned ? "★" : "☆";
+    pinButton.setAttribute("aria-label", chat.pinned
+      ? `Unpin ${chat.title || "conversation"}`
+      : `Pin ${chat.title || "conversation"}`);
+    pinButton.title = chat.pinned ? "Unpin conversation" : "Pin conversation";
+    pinButton.setAttribute("aria-pressed", String(chat.pinned === true));
+    pinButton.addEventListener("click", () => togglePinChat(chat));
+
+    const renameButton = document.createElement("button");
+    renameButton.className = "icon-button history-action-button";
+    renameButton.type = "button";
+    renameButton.disabled = isLoading;
+    renameButton.textContent = "✎";
+    renameButton.setAttribute("aria-label", `Rename ${chat.title || "conversation"}`);
+    renameButton.title = "Rename conversation";
+    renameButton.addEventListener("click", () => startRenameChat(chat, entry));
+
     const deleteButton = document.createElement("button");
-    deleteButton.className = "icon-button delete-history-button";
+    deleteButton.className = "icon-button delete-history-button history-action-button";
     deleteButton.type = "button";
     deleteButton.disabled = isLoading;
     deleteButton.textContent = "×";
@@ -839,8 +1004,94 @@ function renderHistoryList() {
     deleteButton.title = "Delete conversation";
     deleteButton.addEventListener("click", () => deleteChat(chat.id));
 
-    entry.append(button, deleteButton);
+    actions.append(pinButton, renameButton, deleteButton);
+    entry.append(button, actions);
     historyList.append(entry);
+  }
+}
+
+async function updateChatMeta(chat, patch) {
+  const response = await fetch(`/api/history/${encodeURIComponent(chat.id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch)
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not update that conversation.");
+  if (result.chat) {
+    chat.title = result.chat.title;
+    chat.pinned = result.chat.pinned === true;
+  }
+  sortChatHistory();
+  renderHistoryList();
+}
+
+function startRenameChat(chat, entry) {
+  if (isLoading) return;
+  entry.replaceChildren();
+
+  const input = document.createElement("input");
+  input.className = "history-rename-input";
+  input.value = chat.title || "";
+  input.maxLength = 120;
+  input.setAttribute("aria-label", "New conversation name");
+
+  const saveButton = document.createElement("button");
+  saveButton.className = "icon-button history-action-button";
+  saveButton.type = "button";
+  saveButton.textContent = "✓";
+  saveButton.title = "Save name";
+  saveButton.setAttribute("aria-label", "Save conversation name");
+
+  const cancelButton = document.createElement("button");
+  cancelButton.className = "icon-button history-action-button";
+  cancelButton.type = "button";
+  cancelButton.textContent = "×";
+  cancelButton.title = "Cancel rename";
+  cancelButton.setAttribute("aria-label", "Cancel rename");
+
+  const finish = async (commit) => {
+    if (!commit) {
+      renderHistoryList();
+      return;
+    }
+    const title = input.value.trim();
+    if (!title) {
+      input.focus();
+      return;
+    }
+    try {
+      await updateChatMeta(chat, { title: title.slice(0, 120) });
+      setActionStatus("Conversation renamed.");
+    } catch (error) {
+      setActionStatus(error.message || "Could not rename that conversation.");
+      renderHistoryList();
+    }
+  };
+
+  saveButton.addEventListener("click", () => finish(true));
+  cancelButton.addEventListener("click", () => finish(false));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+
+  entry.append(input, saveButton, cancelButton);
+  input.focus();
+  input.select();
+}
+
+async function togglePinChat(chat) {
+  try {
+    await updateChatMeta(chat, { pinned: chat.pinned !== true });
+    setActionStatus(chat.pinned ? "Conversation pinned." : "Conversation unpinned.");
+  } catch (error) {
+    setActionStatus(error.message || "Could not pin that conversation.");
   }
 }
 
@@ -849,6 +1100,7 @@ function openHistory() {
 }
 
 async function restoreChat(chatId, showStatus = true) {
+  if (isBatchProcessing) return;
   try {
     const response = await fetch(`/api/history/${encodeURIComponent(chatId)}`);
     const result = await response.json();
@@ -862,10 +1114,11 @@ async function restoreChat(chatId, showStatus = true) {
     activeSkillIds = Array.isArray(chat.skillIds) ? chat.skillIds : [];
     editingMessageIndex = null;
     draftBeforeEdit = null;
-    pendingImage = null;
+    pendingImages = [];
+    pendingDocuments = [];
+    recentImageContext = [];
     promptInput.value = "";
-    attachmentImage.removeAttribute("src");
-    attachmentPreview.hidden = true;
+    renderPendingAttachments();
     editMessageControls.hidden = true;
     renderMessages();
     renderHistoryList();
@@ -874,7 +1127,7 @@ async function restoreChat(chatId, showStatus = true) {
     promptInput.focus();
     if (showStatus) {
       setActionStatus(chat.messages.some((message) => message.hadImage)
-        ? "Conversation restored. Photo attachments are not retained in saved history."
+        ? "Conversation restored. Image files are not retained in saved history."
         : "Conversation restored.");
     }
   } catch (error) {
@@ -900,9 +1153,10 @@ async function deleteChat(chatId) {
       editingMessageIndex = null;
       draftBeforeEdit = null;
       promptInput.value = "";
-      pendingImage = null;
-      attachmentImage.removeAttribute("src");
-      attachmentPreview.hidden = true;
+      pendingImages = [];
+      pendingDocuments = [];
+      recentImageContext = [];
+      renderPendingAttachments();
       editMessageControls.hidden = true;
       renderMessages();
       renderSkillPicker();
@@ -1038,21 +1292,25 @@ async function loadSkills() {
 
 async function loadSettings() {
   try {
-    const [personalityResponse, memoryResponse, skillsResponse] = await Promise.all([
+    const [personalityResponse, memoryResponse, skillsResponse, instructionsResponse] = await Promise.all([
       fetch("/api/personality"),
       fetch("/api/memory"),
-      fetch("/api/skills")
+      fetch("/api/skills"),
+      fetch("/api/instructions")
     ]);
-    const [personality, memory, skills] = await Promise.all([
+    const [personality, memory, skills, instructions] = await Promise.all([
       personalityResponse.json(),
       memoryResponse.json(),
-      skillsResponse.json()
+      skillsResponse.json(),
+      instructionsResponse.json()
     ]);
     if (!personalityResponse.ok) throw new Error(personality.error || "Could not load chat personality.");
     if (!memoryResponse.ok) throw new Error(memory.error || "Could not load memory.");
     if (!skillsResponse.ok) throw new Error(skills.error || "Could not load skills.");
+    if (!instructionsResponse.ok) throw new Error(instructions.error || "Could not load custom instructions.");
     personalitySelect.value = personality.personality;
     memoryInput.value = typeof memory.text === "string" ? memory.text : "";
+    instructionsInput.value = typeof instructions.text === "string" ? instructions.text : "";
     savedSkills = Array.isArray(skills.skills) ? skills.skills : [];
     activeSkillIds = activeSkillIds.filter((id) => savedSkills.some((skill) => skill.id === id));
     renderSavedSkills();
@@ -1079,6 +1337,26 @@ async function savePersonality() {
     setSettingsStatus(error.message || "Could not save chat personality.", true);
   } finally {
     savePersonalityButton.disabled = false;
+  }
+}
+
+async function saveCustomInstructions() {
+  saveInstructionsButton.disabled = true;
+  setSettingsStatus("Saving custom instructions…");
+  try {
+    const response = await fetch("/api/instructions", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: instructionsInput.value })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save custom instructions.");
+    instructionsInput.value = result.text;
+    setSettingsStatus("Custom instructions saved and will be added to future replies.");
+  } catch (error) {
+    setSettingsStatus(error.message || "Could not save custom instructions.", true);
+  } finally {
+    saveInstructionsButton.disabled = false;
   }
 }
 
@@ -1333,6 +1611,7 @@ function closeSettings() {
 }
 
 function startNewChat() {
+  if (isBatchProcessing) return;
   closeMobileNav(false);
   conversation.length = 0;
   currentChatId = createChatId();
@@ -1340,10 +1619,11 @@ function startNewChat() {
   activeSkillIds = [];
   editingMessageIndex = null;
   draftBeforeEdit = null;
-  pendingImage = null;
+  pendingImages = [];
+  pendingDocuments = [];
+  recentImageContext = [];
   promptInput.value = "";
-  attachmentImage.removeAttribute("src");
-  attachmentPreview.hidden = true;
+  renderPendingAttachments();
   editMessageControls.hidden = true;
   errorMessage.hidden = true;
   renderMessages();
@@ -1360,24 +1640,20 @@ function editUserMessage(index) {
 
   draftBeforeEdit = {
     content: promptInput.value,
-    image: pendingImage
+    images: pendingImages,
+    documents: pendingDocuments
   };
   editingMessageIndex = index;
   promptInput.value = message.content;
-  pendingImage = message.image || null;
-  attachmentPreview.hidden = !pendingImage;
-  if (pendingImage) {
-    attachmentImage.src = `data:${pendingImage.mimeType};base64,${pendingImage.data}`;
-    attachmentName.textContent = "Attached image";
-  } else {
-    attachmentImage.removeAttribute("src");
-  }
+  pendingImages = message.images || (message.image ? [message.image] : []);
+  pendingDocuments = message.documents || [];
+  renderPendingAttachments();
   editMessageControls.hidden = false;
   errorMessage.hidden = true;
   updateSendButton();
   promptInput.focus();
-  setActionStatus(message.hadImage && !message.image
-    ? "This saved message had a photo, but that attachment is not available to edit."
+  setActionStatus(message.hadImage && !message.image && (!message.images || !message.images.length)
+    ? "Saved image files are unavailable to edit. PDF text remains available."
     : "Editing a sent message. Later turns will be replaced when you send.");
 }
 
@@ -1385,15 +1661,11 @@ function cancelEdit() {
   if (editingMessageIndex === null) return;
   editingMessageIndex = null;
   promptInput.value = draftBeforeEdit ? draftBeforeEdit.content : "";
-  pendingImage = draftBeforeEdit ? draftBeforeEdit.image : null;
+  pendingImages = draftBeforeEdit ? draftBeforeEdit.images : [];
+  pendingDocuments = draftBeforeEdit ? draftBeforeEdit.documents : [];
   draftBeforeEdit = null;
   editMessageControls.hidden = true;
-  attachmentPreview.hidden = !pendingImage;
-  if (pendingImage) {
-    attachmentImage.src = `data:${pendingImage.mimeType};base64,${pendingImage.data}`;
-  } else {
-    attachmentImage.removeAttribute("src");
-  }
+  renderPendingAttachments();
   updateSendButton();
   setActionStatus("Message edit cancelled.");
 }
@@ -1414,13 +1686,346 @@ function copyLatestMessage(role) {
 }
 
 function updateSendButton() {
-  const hasContent = promptInput.value.trim().length > 0 || pendingImage !== null;
-  const imageModelSelected = !pendingImage || modelSupportsVision();
-  imageModelHint.hidden = !pendingImage || imageModelSelected;
-  sendButton.disabled = isLoading || !modelsAvailable || !hasContent || !imageModelSelected;
+  const hasImages = pendingImages.length > 0;
+  const hasAttachments = hasImages || pendingDocuments.length > 0;
+  const hasContent = promptInput.value.trim().length > 0 || hasAttachments;
+  const imageModelSelected = !hasImages || modelSupportsVision();
+  imageModelHint.hidden = !hasImages || imageModelSelected;
+  sendButton.disabled = isLoading || isProcessingAttachments || !modelsAvailable || !hasContent || !imageModelSelected;
   sendButton.querySelector("span").textContent = isLoading
     ? "Thinking..."
     : editingMessageIndex === null ? "Send" : "Update";
+}
+
+function renderPendingAttachments() {
+  const attachments = [
+    ...pendingImages.map((image, index) => ({ kind: "image", name: image.name, image, index })),
+    ...pendingDocuments.map((document, index) => ({ kind: "document", name: document.name, document, index }))
+  ];
+  attachmentList.replaceChildren();
+  attachmentPreview.hidden = attachments.length === 0;
+
+  for (const attachment of attachments) {
+    const item = document.createElement("div");
+    item.className = "attachment-item";
+    if (attachment.image) {
+      const thumbnail = document.createElement("img");
+      thumbnail.src = `data:${attachment.image.mimeType};base64,${attachment.image.data}`;
+      thumbnail.alt = "";
+      item.append(thumbnail);
+    } else {
+      const icon = document.createElement("span");
+      icon.className = "attachment-file-icon";
+      icon.textContent = "PDF";
+      item.append(icon);
+    }
+
+    const copy = document.createElement("span");
+    copy.className = "attachment-file-copy";
+    const name = document.createElement("span");
+    name.className = "attachment-file-name";
+    name.textContent = attachment.name;
+    name.title = attachment.name;
+    const meta = document.createElement("span");
+    meta.className = "attachment-file-meta";
+    const size = attachment.image ? attachment.image.size : attachment.document.size;
+    meta.textContent = `${attachment.image ? "Image" : "PDF"}${size ? ` · ${formatBatchSize(size)}` : ""}`;
+    copy.append(name, meta);
+    item.append(copy);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.textContent = "×";
+    removeButton.setAttribute("aria-label", `Remove ${attachment.name}`);
+    removeButton.disabled = isLoading || isProcessingAttachments;
+    removeButton.addEventListener("click", () => {
+      if (attachment.kind === "image") pendingImages.splice(attachment.index, 1);
+      else pendingDocuments.splice(attachment.index, 1);
+      renderPendingAttachments();
+      updateSendButton();
+    });
+    item.append(removeButton);
+    attachmentList.append(item);
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error(`Could not read ${file.name}.`));
+    });
+    reader.addEventListener("error", () => reject(new Error(`Could not read ${file.name}.`)));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function extractPdfText(file, dataUrl) {
+  const base64 = dataUrl.split(",")[1];
+  if (!base64) throw new Error(`Could not read ${file.name}.`);
+  const response = await fetch("/api/documents/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mimeType: "application/pdf", data: base64 })
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `Could not process ${file.name}.`);
+  return {
+    kind: "document",
+    name: file.name,
+    mimeType: "application/pdf",
+    data: base64,
+    text: result.text,
+    pages: result.pages,
+    size: file.size
+  };
+}
+
+async function processAttachmentFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return;
+
+  const existingCount = pendingImages.length + pendingDocuments.length;
+  if (existingCount + files.length > maxAttachments) {
+    showError(`Attach up to ${maxAttachments} images or PDFs at a time.`);
+    return;
+  }
+
+  let totalBytes = files.reduce((total, file) => total + file.size, 0);
+  totalBytes += pendingImages.reduce((total, image) => total + (image.size || 0), 0);
+  totalBytes += pendingDocuments.reduce((total, document) => total + (document.size || 0), 0);
+  if (totalBytes > maxTotalAttachmentBytes) {
+    showError("Attachments must total 24 MB or less.");
+    return;
+  }
+
+  for (const file of files) {
+    const isImage = ["image/jpeg", "image/png", "image/webp"].includes(file.type);
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    if (!isImage && !isPdf) {
+      showError("Choose JPEG, PNG, WebP images, or PDF files.");
+      return;
+    }
+    if (isImage && file.size > maxImageBytes) {
+      showError("Images must be 2 MB or smaller each.");
+      return;
+    }
+    if (isPdf && file.size > maxPdfBytes) {
+      showError("PDF files must be 5 MB or smaller each.");
+      return;
+    }
+  }
+
+  isProcessingAttachments = true;
+  uploadButton.disabled = true;
+  updateSendButton();
+  setActionStatus("Reading attachments...");
+  try {
+    const loaded = [];
+    for (const file of files) {
+      const isImage = ["image/jpeg", "image/png", "image/webp"].includes(file.type);
+      const dataUrl = await readFileAsDataUrl(file);
+      if (isImage) {
+        const base64 = dataUrl.split(",")[1];
+        if (!base64) throw new Error(`Could not read ${file.name}.`);
+        loaded.push({
+          kind: "image",
+          name: file.name,
+          mimeType: file.type,
+          data: base64,
+          size: file.size
+        });
+      } else {
+        loaded.push(await extractPdfText(file, dataUrl));
+      }
+    }
+
+    pendingImages.push(...loaded.filter((attachment) => attachment.kind === "image"));
+    pendingDocuments.push(...loaded.filter((attachment) => attachment.kind === "document"));
+    renderPendingAttachments();
+    errorMessage.hidden = true;
+    const totalFiles = pendingImages.length + pendingDocuments.length;
+    setActionStatus(totalFiles > maxChatAttachments
+      ? `${totalFiles} files attached. Sending processes them as one batch report in this chat.`
+      : `${loaded.length} attachment${loaded.length === 1 ? "" : "s"} ready.`);
+  } catch (error) {
+    showError(error.message || "Could not read the selected attachments.");
+  } finally {
+    isProcessingAttachments = false;
+    uploadButton.disabled = isLoading;
+    updateSendButton();
+  }
+}
+
+function formatBatchSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function readBatchEventStream(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalEvent = null;
+
+  function consumeLine(line) {
+    if (!line.startsWith("data:")) return;
+    let event;
+    try {
+      event = JSON.parse(line.slice(5).trim());
+    } catch {
+      throw new Error("The batch server returned an invalid response.");
+    }
+    if (event.error) throw new Error(event.error);
+    onEvent(event);
+    if (event.done === true) finalEvent = event;
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop();
+    lines.forEach(consumeLine);
+    if (done) {
+      if (buffer) consumeLine(buffer);
+      break;
+    }
+  }
+
+  if (!finalEvent || typeof finalEvent.report !== "string") {
+    throw new Error("Batch processing ended before the report was ready.");
+  }
+  return finalEvent;
+}
+
+async function persistHistoryMessages(messages) {
+  const response = await fetch(`/api/history/${encodeURIComponent(currentChatId)}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages })
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error((result && result.error) || "Could not save these messages to the chat.");
+  }
+  return result.chat;
+}
+
+async function runBatchInChat() {
+  if (isBatchProcessing) return;
+  const instruction = promptInput.value.trim().slice(0, maxBatchInstructionLength);
+  const files = [
+    ...pendingImages.map((image) => ({
+      name: image.name,
+      mimeType: image.mimeType,
+      data: image.data,
+      sizeBytes: image.size || 0
+    })),
+    ...pendingDocuments.map((document) => ({
+      name: document.name,
+      mimeType: "application/pdf",
+      data: document.data,
+      sizeBytes: document.size || 0
+    }))
+  ];
+  if (!files.length) return;
+  if (files.some((file) => !file.data)) {
+    showError("Re-attach these files before processing them as a batch.");
+    return;
+  }
+
+  isBatchProcessing = true;
+  errorMessage.hidden = true;
+  const progressMessage = {
+    role: "assistant",
+    content: `Preparing ${files.length} files…`,
+    model: "batch",
+    isStreaming: true
+  };
+  conversation.push(progressMessage);
+  renderMessages();
+  updateToolbarState();
+  promptInput.disabled = true;
+  uploadButton.disabled = true;
+  sendButton.disabled = true;
+  setActionStatus(`Processing ${files.length} files…`);
+
+  try {
+    const response = await fetch("/api/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelSelect.value || "auto",
+        instruction,
+        files: files.map(({ name, mimeType, data }) => ({ name, mimeType, data }))
+      })
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => null);
+      throw new Error((result && result.error) || "Could not process these files.");
+    }
+    if (!(response.headers.get("content-type") || "").includes("text/event-stream")) {
+      throw new Error("The batch server did not start a progress stream.");
+    }
+
+    const result = await readBatchEventStream(response, (event) => {
+      if (typeof event.progress !== "string") return;
+      progressMessage.content = event.progress;
+      setActionStatus(event.progress);
+      renderMessages();
+    });
+
+    const results = result.results || [];
+    const processed = results.filter((item) => item.status === "done").length;
+    const failed = results.length - processed;
+    const fileNames = results.map((item) => item.name);
+    const instructionLine = instruction ? `\nInstruction: ${instruction}` : "";
+    const summary = `Batch report for ${fileNames.length} file${fileNames.length === 1 ? "" : "s"}: ${fileNames.join(", ")}${instructionLine}`;
+
+    conversation.pop();
+    conversation.push(
+      { role: "user", content: summary },
+      {
+        role: "assistant",
+        content: result.report,
+        model: `${result.model} · batch report`,
+        isArriving: true
+      }
+    );
+    promptInput.value = "";
+    promptInput.style.height = "auto";
+    pendingImages = [];
+    pendingDocuments = [];
+    recentImageContext = [];
+    renderPendingAttachments();
+    renderMessages();
+    updateToolbarState();
+    setActionStatus(`Report added to this chat: ${processed} processed${failed ? `, ${failed} failed` : ""}.`);
+
+    try {
+      await persistHistoryMessages([
+        { role: "user", content: summary },
+        { role: "assistant", content: result.report }
+      ]);
+      await loadChatHistory();
+    } catch {
+      setActionStatus("Report added to the chat, but it could not be saved to history.");
+    }
+  } catch (error) {
+    if (conversation[conversation.length - 1] === progressMessage) conversation.pop();
+    renderMessages();
+    updateToolbarState();
+    showError(error.message || "Could not process these files.");
+  } finally {
+    isBatchProcessing = false;
+    promptInput.disabled = false;
+    uploadButton.disabled = isLoading;
+    updateSendButton();
+    promptInput.focus();
+  }
 }
 
 function modelSupportsVision() {
@@ -1486,6 +2091,10 @@ function promptNeedsReasoning(prompt) {
   return /\b(calculate|calculation|compute|solve|equation|math|mathematics|logic|reasoning|prove|proof|analy[sz]e|compare|derive|deduce)\b|step[- ]by[- ]step|(?:\d+\s*[+\-*\/=]\s*\d+)/i.test(prompt);
 }
 
+function promptMentionsImages(prompt) {
+  return /\b(image|images|photo|photos|picture|pictures|screenshot|screenshots|attachment|attachments|attached)\b|\b(these|those|above)\b/i.test(prompt);
+}
+
 function isAtBottom() {
   return messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 80;
 }
@@ -1505,9 +2114,14 @@ function scrollToBottom() {
 function setLoading(loading) {
   isLoading = loading;
   messagesElement.setAttribute("aria-busy", String(loading));
+  sendButton.hidden = loading;
+  stopButton.hidden = !loading;
+  stopButton.disabled = !loading;
   promptInput.disabled = loading;
-  uploadButton.disabled = loading;
-  removeAttachmentButton.disabled = loading;
+  uploadButton.disabled = loading || isProcessingAttachments;
+  attachmentList.querySelectorAll("button").forEach((button) => {
+    button.disabled = loading || isProcessingAttachments;
+  });
   voiceButton.disabled = loading;
   webSearchToggle.disabled = loading;
   modelSelect.disabled = loading || !modelsAvailable;
@@ -1597,51 +2211,58 @@ promptInput.addEventListener("keydown", (event) => {
 });
 
 imageInput.addEventListener("change", () => {
-  const file = imageInput.files && imageInput.files[0];
+  const files = Array.from(imageInput.files || []);
   imageInput.value = "";
-  if (!file) return;
-
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-    showError("Choose a JPEG, PNG, or WebP image.");
-    return;
-  }
-  if (file.size > maxImageBytes) {
-    showError("Images must be 2 MB or smaller.");
-    return;
-  }
-
-  const reader = new FileReader();
-  reader.addEventListener("load", () => {
-    if (typeof reader.result !== "string") {
-      showError("Could not read that image. Please try another file.");
-      return;
-    }
-
-    const base64 = reader.result.split(",")[1];
-    if (!base64) {
-      showError("Could not read that image. Please try another file.");
-      return;
-    }
-
-    pendingImage = { mimeType: file.type, data: base64 };
-    attachmentImage.src = reader.result;
-    attachmentName.textContent = file.name;
-    attachmentPreview.hidden = false;
-    errorMessage.hidden = true;
-    updateSendButton();
-  });
-  reader.addEventListener("error", () => showError("Could not read that image. Please try another file."));
-  reader.readAsDataURL(file);
+  processAttachmentFiles(files);
 });
 
 uploadButton.addEventListener("click", () => imageInput.click());
 
-removeAttachmentButton.addEventListener("click", () => {
-  pendingImage = null;
-  attachmentImage.removeAttribute("src");
-  attachmentPreview.hidden = true;
-  updateSendButton();
+let composerDragDepth = 0;
+
+function dragHasFiles(event) {
+  const types = event.dataTransfer && event.dataTransfer.types;
+  return !!types && Array.from(types).includes("Files");
+}
+
+function setComposerDragging(active) {
+  form.classList.toggle("is-dragging", active);
+  composerDropHint.hidden = !active;
+  if (!active) composerDragDepth = 0;
+}
+
+form.addEventListener("dragenter", (event) => {
+  if (!dragHasFiles(event) || isLoading || isProcessingAttachments || isBatchProcessing) return;
+  event.preventDefault();
+  composerDragDepth += 1;
+  setComposerDragging(true);
 });
+
+form.addEventListener("dragover", (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+
+form.addEventListener("dragleave", (event) => {
+  if (!dragHasFiles(event)) return;
+  composerDragDepth = Math.max(0, composerDragDepth - 1);
+  if (composerDragDepth === 0) setComposerDragging(false);
+});
+
+form.addEventListener("drop", (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  const files = event.dataTransfer ? Array.from(event.dataTransfer.files) : [];
+  setComposerDragging(false);
+  if (isLoading || isProcessingAttachments || isBatchProcessing) {
+    setActionStatus("Wait for the current request to finish before adding files.");
+    return;
+  }
+  if (files.length) processAttachmentFiles(files);
+});
+
+window.addEventListener("blur", () => setComposerDragging(false));
 
 refreshModelsButton.addEventListener("click", loadModels);
 newChatButton.addEventListener("click", startNewChat);
@@ -1675,6 +2296,72 @@ sidebar.addEventListener("keydown", (event) => {
 mobileViewport.addEventListener("change", (event) => {
   if (!event.matches) closeMobileNav(false);
 });
+
+const drawerSwipe = { tracking: false, startX: 0, startY: 0, open: false, handled: false };
+const drawerSwipeThreshold = 64;
+const drawerEdgeWidth = 26;
+
+function suppressSwipeClick() {
+  const blockClick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  document.addEventListener("click", blockClick, { capture: true, once: true });
+  window.setTimeout(() => document.removeEventListener("click", blockClick, true), 400);
+}
+
+function startDrawerSwipe(event) {
+  drawerSwipe.tracking = false;
+  if (!mobileViewport.matches || event.touches.length !== 1) return;
+  if (!settingsDialog.hidden || !voiceModeElement.hidden) return;
+  const target = event.target;
+  if (target.closest && target.closest("#chat-form, input, textarea, select")) return;
+
+  const touch = event.touches[0];
+  const isOpen = sidebar.classList.contains("is-open");
+  if (isOpen) {
+    if (!sidebar.contains(target) && target !== mobileNavBackdrop) return;
+  } else if (touch.clientX > drawerEdgeWidth) {
+    return;
+  }
+
+  drawerSwipe.tracking = true;
+  drawerSwipe.startX = touch.clientX;
+  drawerSwipe.startY = touch.clientY;
+  drawerSwipe.open = isOpen;
+  drawerSwipe.handled = false;
+}
+
+function moveDrawerSwipe(event) {
+  if (!drawerSwipe.tracking || drawerSwipe.handled) return;
+  if (event.touches.length !== 1) {
+    drawerSwipe.tracking = false;
+    return;
+  }
+
+  const touch = event.touches[0];
+  const deltaX = touch.clientX - drawerSwipe.startX;
+  const deltaY = touch.clientY - drawerSwipe.startY;
+  if (Math.abs(deltaX) < drawerSwipeThreshold || Math.abs(deltaX) < Math.abs(deltaY) * 1.4) return;
+
+  drawerSwipe.handled = true;
+  if (!drawerSwipe.open && deltaX > 0) {
+    openMobileNav();
+    suppressSwipeClick();
+  } else if (drawerSwipe.open && deltaX < 0) {
+    closeMobileNav();
+    suppressSwipeClick();
+  }
+}
+
+function endDrawerSwipe() {
+  drawerSwipe.tracking = false;
+}
+
+document.addEventListener("touchstart", startDrawerSwipe, { passive: true });
+document.addEventListener("touchmove", moveDrawerSwipe, { passive: true });
+document.addEventListener("touchend", endDrawerSwipe, { passive: true });
+document.addEventListener("touchcancel", endDrawerSwipe, { passive: true });
 chatHistoryButton.addEventListener("click", openHistory);
 copyInputButton.addEventListener("click", () => copyLatestMessage("user"));
 copyOutputButton.addEventListener("click", () => copyLatestMessage("assistant"));
@@ -1738,6 +2425,9 @@ settingsNav.addEventListener("click", (event) => {
   settingsContent.scrollTop = Math.max(0, offset - 48);
 });
 saveMemoryButton.addEventListener("click", saveMemory);
+saveInstructionsButton.addEventListener("click", saveCustomInstructions);
+historySearchInput.addEventListener("input", renderHistoryList);
+exportChatButton.addEventListener("click", exportConversation);
 if (voiceSelect) {
   voiceSelect.addEventListener("change", () => {
     writeVoicePreference(voiceSelect.value);
@@ -1817,6 +2507,7 @@ scrollToBottomButton.addEventListener("click", scrollToBottom);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeSettings();
+    closeBatchStudio();
     skillPopover.hidden = true;
     closeMobileNav();
     closeOutline();
@@ -2301,9 +2992,10 @@ async function readChatEventStream(response, onToken, onModel) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let reply = "";
-  let model = null;
-  let completed = false;
+      let reply = "";
+    let model = null;
+    let completed = false;
+    let truncated = false;
 
   function consumeLine(line) {
     if (!line.startsWith("data:")) return;
@@ -2322,6 +3014,7 @@ async function readChatEventStream(response, onToken, onModel) {
       reply += event.token;
       onToken(reply);
     }
+    if (event.truncated === true) truncated = true;
     if (event.done === true) {
       if (typeof event.reply === "string") reply = event.reply;
       completed = true;
@@ -2343,7 +3036,7 @@ async function readChatEventStream(response, onToken, onModel) {
   if (!completed || !reply.trim()) {
     throw new Error("The response stream ended before Ollama finished.");
   }
-  return { reply, model };
+  return { reply, model, truncated };
 }
 
 async function readSkillEventStream(response) {
@@ -2399,15 +3092,31 @@ async function readSkillEventStream(response) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
-  if ((!text && !pendingImage) || sendButton.disabled) return;
+  if ((!text && !pendingImages.length && !pendingDocuments.length) || sendButton.disabled) return;
+
+  if (pendingImages.length + pendingDocuments.length > maxChatAttachments) {
+    if (editingMessageIndex !== null) {
+      showError("Finish editing the current message before sending more than five files.");
+      return;
+    }
+    runBatchInChat();
+    return;
+  }
 
   errorMessage.hidden = true;
-  const image = pendingImage;
-  const content = text || "Describe this image.";
+  const images = pendingImages;
+  const documents = pendingDocuments;
+  const content = text || (images.length
+    ? `Describe these ${images.length} attached image${images.length === 1 ? "" : "s"}.`
+    : `Summarize ${documents.length === 1 ? "this PDF" : "these PDFs"}.`);
+  const reusableImages = images.length === 0 && documents.length === 0 &&
+    recentImageContext.length > 0 && promptMentionsImages(content)
+    ? recentImageContext
+    : [];
   let selectedModel;
   try {
     selectedModel = chooseModelForRequest({
-      requiresVision: Boolean(image),
+      requiresVision: images.length > 0,
       requiresReasoning: activeSkillIds.length > 0 || promptNeedsReasoning(content)
     });
   } catch (error) {
@@ -2426,14 +3135,23 @@ form.addEventListener("submit", async (event) => {
     renderMessages();
   }
 
-  const userMessage = { role: "user", content, image };
+  const userMessage = {
+    role: "user",
+    content,
+    images,
+    documents: documents.map(({ name, text: documentText, pages }) => ({
+      name,
+      text: documentText,
+      pages
+    }))
+  };
   conversation.push(userMessage);
   const userBubble = addMessage(userMessage, conversation.length - 1);
   promptInput.value = "";
   promptInput.style.height = "auto";
-  pendingImage = null;
-  attachmentImage.removeAttribute("src");
-  attachmentPreview.hidden = true;
+  pendingImages = [];
+  pendingDocuments = [];
+  renderPendingAttachments();
   editMessageControls.hidden = true;
   setLoading(true);
   const streamingMessage = {
@@ -2451,23 +3169,43 @@ form.addEventListener("submit", async (event) => {
     const recentMessages = conversation.slice(-maxServerMessages);
     let latestImageIndex = -1;
     recentMessages.forEach((message, index) => {
-      if (message.image) latestImageIndex = index;
+      if (message.image || (message.images && message.images.length)) latestImageIndex = index;
     });
+    const imagePayloadIndex = latestImageIndex >= 0
+      ? latestImageIndex
+      : (reusableImages.length ? recentMessages.length - 1 : -1);
 
+    activeChatController = new AbortController();
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: activeChatController.signal,
       body: JSON.stringify({
         chatId: currentChatId,
         model: selectedModel,
         webSearch: webSearchEnabled,
         skillIds: activeSkillIds,
-        messages: recentMessages.map((message, index) => ({
-          role: message.role,
-          content: message.content,
-          ...(message.hadImage ? { hadImage: true } : {}),
-          ...(index === latestImageIndex ? { image: message.image } : {})
-        }))
+        messages: recentMessages.map((message, index) => {
+          const messageImages = message.images || (message.image ? [message.image] : []);
+          return {
+            role: message.role,
+            content: message.content,
+            ...(message.hadImage ? { hadImage: true } : {}),
+            ...(message.hadDocuments ? { hadDocuments: true } : {}),
+            ...(index === imagePayloadIndex && (messageImages.length || reusableImages.length)
+              ? {
+                  images: (messageImages.length ? messageImages : reusableImages)
+                    .map(({ mimeType, data }) => ({ mimeType, data }))
+                }
+              : {}),
+            ...(message.documents && message.documents.length
+              ? { documents: message.documents.map(({ name, text: documentText }) => ({
+                  name,
+                  text: documentText
+                })) }
+              : {})
+          };
+        })
       })
     });
     if (!response.ok) {
@@ -2504,11 +3242,17 @@ form.addEventListener("submit", async (event) => {
     if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
     liveOutput.textContent = reply;
 
-    if (image) {
+    if (images.length) {
+      const knownImages = new Set(recentImageContext.map((image) => image.data));
+      recentImageContext = [
+        ...recentImageContext,
+        ...images.filter((image) => !knownImages.has(image.data))
+      ].slice(-maxAttachments);
       for (const message of conversation) {
-        if (message.image) {
+        if (message.image || (message.images && message.images.length)) {
           message.hadImage = true;
           message.image = null;
+          message.images = null;
         }
       }
     }
@@ -2516,7 +3260,8 @@ form.addEventListener("submit", async (event) => {
       role: "assistant",
       content: reply,
       model: responseModel,
-      isArriving: true
+      isArriving: true,
+      ...(streamResult.truncated ? { truncated: true } : {})
     };
     conversation.push(assistantMessage);
     assistantBubble.classList.remove("is-streaming");
@@ -2529,7 +3274,37 @@ form.addEventListener("submit", async (event) => {
     await loadChatHistory();
     setActionStatus("Structured response received.");
   } catch (error) {
+    const wasStopped = error.name === "AbortError" ||
+      (activeChatController !== null && activeChatController.signal.aborted);
     if (streamRenderFrame) cancelAnimationFrame(streamRenderFrame);
+    const partialReply = pendingReply.trim();
+
+    if (wasStopped && partialReply) {
+      liveOutput.replaceWith(renderStructuredOutput(partialReply));
+      assistantBubble.classList.remove("is-streaming");
+      const stoppedMessage = {
+        role: "assistant",
+        content: partialReply,
+        model: (assistantBubble.querySelector(".response-model") || {}).textContent || selectedModel,
+        stopped: true
+      };
+      conversation.push(stoppedMessage);
+
+      const stoppedNote = document.createElement("span");
+      stoppedNote.className = "stopped-note";
+      stoppedNote.textContent = "Stopped before the reply finished.";
+      assistantBubble.querySelector(".message-content").append(stoppedNote);
+      appendMessageActions(
+        stoppedMessage,
+        conversation.length - 1,
+        assistantBubble.querySelector(".message-column")
+      );
+      updateToolbarState();
+      updateScrollToBottomButton();
+      setActionStatus("Generation stopped. The partial reply is kept in this chat.");
+      return;
+    }
+
     conversation.pop();
     if (assistantBubble) assistantBubble.remove();
     if (previousConversation) {
@@ -2544,18 +3319,26 @@ form.addEventListener("submit", async (event) => {
       renderOutline();
     }
     promptInput.value = text;
-    if (image) {
-      pendingImage = image;
-      attachmentImage.src = `data:${image.mimeType};base64,${image.data}`;
-      attachmentName.textContent = "Attached image";
-      attachmentPreview.hidden = false;
-    }
+    pendingImages = images;
+    pendingDocuments = documents;
+    renderPendingAttachments();
     updateSendButton();
-    showError(error.message || "Could not reach the server. Please try again.");
+    if (wasStopped) {
+      setActionStatus("Generation stopped before any text arrived. Your message is back in the composer.");
+    } else {
+      showError(error.message || "Could not reach the server. Please try again.");
+    }
   } finally {
+    activeChatController = null;
     setLoading(false);
     promptInput.focus();
   }
+});
+
+stopButton.addEventListener("click", () => {
+  if (!activeChatController || !isLoading) return;
+  setActionStatus("Stopping generation…");
+  activeChatController.abort();
 });
 
 loadChatHistory();

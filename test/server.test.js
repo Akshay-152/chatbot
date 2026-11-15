@@ -6,6 +6,28 @@ const path = require("node:path");
 const test = require("node:test");
 const server = require("../server");
 
+function createTextPdf(text) {
+  const stream = `BT /F1 18 Tf 72 720 Td (${text}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`
+  ];
+  let content = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(content));
+    content += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = Buffer.byteLength(content);
+  content += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  content += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  content += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(content, "ascii");
+}
+
 test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   const receivedChats = [];
   const longVoiceAnswer = Array.from({ length: 60 }, (_, index) =>
@@ -52,6 +74,8 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
         const isVoiceRequest = !isSkillGeneration && chat.messages.some((message) =>
           typeof message.content === "string" && message.content.includes("hands-free voice mode")
         );
+        const shouldTruncateChat = !isSkillGeneration &&
+          chat.messages.at(-1).content === "simulate length cutoff";
         const content = isSkillGeneration
           ? shouldTruncateSkill
             ? "{\"name\":\"cut off\""
@@ -70,7 +94,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
         response.end(`${JSON.stringify({
           message: { content: chunks[1] },
           done: true,
-          ...(shouldTruncateSkill ? { done_reason: "length" } : {})
+          ...(shouldTruncateSkill || shouldTruncateChat ? { done_reason: "length" } : {})
         })}\n`);
       } else {
         response.end(JSON.stringify({
@@ -215,7 +239,10 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
       messages: [{
         role: "user",
         content: "Remember my favorite color is violet. What is in this picture?",
-        image: { mimeType: "image/png", data: "aGVsbG8=" }
+        images: [
+          { mimeType: "image/png", data: "aGVsbG8=" },
+          { mimeType: "image/jpeg", data: "d29ybGQ=" }
+        ]
       }]
     })
   });
@@ -231,7 +258,7 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   assert.equal(receivedChats[0].model, "gemma4:e2b");
   assert.equal(receivedChats[0].stream, true);
   assert.match(receivedChats[0].messages[0].content, /warm, affectionate, playful/);
-  assert.deepEqual(receivedChats[0].messages.find((message) => message.images).images, ["aGVsbG8="]);
+  assert.deepEqual(receivedChats[0].messages.find((message) => message.images).images, ["aGVsbG8=", "d29ybGQ="]);
 
   const casualPersonalityResponse = await fetch(`${appUrl}/api/personality`, {
     method: "PUT",
@@ -536,4 +563,86 @@ test("Ollama chat, persistent history, and cross-chat memory", async (t) => {
   });
   assert.equal(unconfiguredTranscription.status, 503);
   assert.equal((await unconfiguredTranscription.json()).code, "stt_unavailable");
+
+  const samplePdf = createTextPdf("Readable PDF text for processing.");
+  const extractionResponse = await fetch(`${appUrl}/api/documents/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mimeType: "application/pdf",
+      data: samplePdf.toString("base64")
+    })
+  });
+  assert.equal(extractionResponse.status, 200);
+  const extraction = await extractionResponse.json();
+  assert.equal(extraction.pages, 1);
+  assert.match(extraction.text, /Readable PDF text for processing/);
+
+  const invalidPdfResponse = await fetch(`${appUrl}/api/documents/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mimeType: "application/pdf",
+      data: Buffer.from("not a PDF").toString("base64")
+    })
+  });
+  assert.equal(invalidPdfResponse.status, 400);
+
+  const pdfChatResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-pdf",
+      model: "gemma4:e2b",
+      messages: [{
+        role: "user",
+        content: "Summarize this document.",
+        documents: [{ name: "sample.pdf", text: extraction.text }]
+      }]
+    })
+  });
+  assert.equal(pdfChatResponse.status, 200);
+  const pdfChatMessage = receivedChats.at(-1).messages.find((message) =>
+    message.role === "user" && message.content.includes("Attached PDF")
+  );
+  assert.match(pdfChatMessage.content, /sample\.pdf/);
+  assert.match(pdfChatMessage.content, /Readable PDF text for processing/);
+  const pdfChatHistory = await fetch(`${appUrl}/api/history/test-chat-pdf`);
+  assert.equal(pdfChatHistory.status, 200);
+  const savedPdfMessage = (await pdfChatHistory.json()).chat.messages[0];
+  assert.equal(savedPdfMessage.documents[0].name, "sample.pdf");
+  assert.match(savedPdfMessage.documents[0].text, /Readable PDF text for processing/);
+
+  const instructionsResponse = await fetch(`${appUrl}/api/instructions`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "Always answer in haiku form." })
+  });
+  assert.equal(instructionsResponse.status, 200);
+  assert.equal((await instructionsResponse.json()).text, "Always answer in haiku form.");
+
+  const truncatedChatResponse = await fetch(`${appUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chatId: "test-chat-truncated",
+      model: "gemma4:e2b",
+      messages: [{ role: "user", content: "simulate length cutoff" }]
+    })
+  });
+  assert.equal(truncatedChatResponse.status, 200);
+  const truncatedChatEvents = (await truncatedChatResponse.text()).split(/\n\n/).filter(Boolean).map((event) =>
+    JSON.parse(event.replace(/^data:\s*/, ""))
+  );
+  assert.equal(truncatedChatEvents.at(-1).done, true);
+  assert.equal(truncatedChatEvents.at(-1).truncated, true);
+  assert.equal("truncated" in streamEvents.at(-1), false);
+  assert.match(receivedChats.at(-1).messages[0].content, /Always answer in haiku form/);
+
+  const clearInstructionsResponse = await fetch(`${appUrl}/api/instructions`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "" })
+  });
+  assert.equal(clearInstructionsResponse.status, 200);
 });
